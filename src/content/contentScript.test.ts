@@ -12,9 +12,16 @@ describe("content script friend markers", () => {
   });
 
   it("marks only known friends and remains idempotent", async () => {
-    const state = addFriendFromProfile(defaultAppState, { username: "Neil", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const state = addFriendFromProfile(defaultAppState, {
+      username: "Neil",
+      name: "Neo",
+      refreshedAt: "2026-06-28T00:00:00.000Z"
+    });
     document.body.innerHTML = `
-      <a href="/u/neil">Neil</a>
+      <a href="/u/neil"><img class="avatar" src="/user_avatar/linux.do/neil/48/1.png" alt="">Neo</a>
+      <a href="/u/neil" class="username">@neil</a>
+      <a href="/u/neil/summary" class="user-navigation-tab">总结</a>
+      <a href="/u/neil"><img class="avatar" src="/user_avatar/linux.do/neil/48/1.png" alt="">neil</a>
       <a href="/u/other">Other</a>
     `;
 
@@ -22,21 +29,91 @@ describe("content script friend markers", () => {
     markFriends(state);
     markFriends(state);
 
-    expect(document.querySelectorAll(".linuxdo-friends-marker")).toHaveLength(1);
-    expect(document.querySelector('a[href="/u/neil"]')?.textContent).toContain("特别关注");
+    const friendLink = document.querySelector<HTMLAnchorElement>('a[href="/u/neil"]');
+    expect(document.querySelectorAll(".linuxdo-friends-marker")).toHaveLength(0);
+    expect(friendLink?.classList.contains("linuxdo-friends-friend-link")).toBe(false);
+    expect(friendLink?.querySelector("img")?.classList.contains("linuxdo-friends-friend-avatar")).toBe(true);
+    expect(friendLink?.querySelector(".linuxdo-friends-name-mark")?.textContent).toBe("Neo");
+    expect(friendLink?.textContent).toBe("Neo");
+    expect(document.querySelector('a.username')?.querySelector(".linuxdo-friends-name-mark")).toBeNull();
+    expect(document.querySelector('a[href="/u/neil/summary"]')?.querySelector(".linuxdo-friends-name-mark")).toBeNull();
+    const plainUsernameLink = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href="/u/neil"]')).find(
+      (link) => link.textContent?.trim() === "neil"
+    );
+    expect(plainUsernameLink?.querySelector(".linuxdo-friends-name-mark")).toBeNull();
     expect(document.querySelector('a[href="/u/other"]')?.textContent).toBe("Other");
+    const pageStyle = document.getElementById("linuxdo-friends-page-style")?.textContent ?? "";
+    expect(pageStyle).toContain("linuxdo-friends-friend-avatar");
+    expect(pageStyle).toContain("linuxdo-friends-name-mark");
+    expect(pageStyle).not.toContain("outline:");
+    expect(pageStyle).toContain("0 0 52px color-mix(in srgb, var(--linuxdo-friends-accent) 20%, transparent)");
+    expect(pageStyle).toContain("0 0 68px color-mix(in srgb, var(--linuxdo-friends-accent) 28%, transparent)");
+    expect(pageStyle).toContain("animation: linuxdo-friends-avatar-breathe");
+    expect(pageStyle).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(pageStyle).toContain("height: 34%");
+    expect(pageStyle).toContain("padding-inline: 1ch");
+    expect(pageStyle).toContain("top: 56%");
+    expect(pageStyle).not.toMatch(/\n\s*color:\s/);
   });
 
   it("removes stale markers when the friend set changes", async () => {
-    const state = addFriendFromProfile(defaultAppState, { username: "Neil", refreshedAt: "2026-06-28T00:00:00.000Z" });
-    document.body.innerHTML = '<a href="/u/neil">Neil</a>';
+    const state = addFriendFromProfile(defaultAppState, {
+      username: "Neil",
+      name: "Neo",
+      refreshedAt: "2026-06-28T00:00:00.000Z"
+    });
+    document.body.innerHTML = '<a href="/u/neil"><img class="avatar" src="/avatar.png" alt="">Neo</a>';
 
     const { markFriends } = await import("./contentScript");
     markFriends(state);
     markFriends(defaultAppState);
 
     expect(document.querySelectorAll(".linuxdo-friends-marker")).toHaveLength(0);
-    expect(document.querySelector('a[href="/u/neil"]')?.textContent).toBe("Neil");
+    expect(document.querySelector('a[href="/u/neil"]')?.textContent).toBe("Neo");
+    expect(document.querySelector('a[href="/u/neil"]')?.querySelector(".linuxdo-friends-name-mark")).toBeNull();
+    expect(document.querySelector("img")?.classList.contains("linuxdo-friends-friend-avatar")).toBe(false);
+  });
+
+  it("reapplies friend markers after Discourse-style in-page navigation", async () => {
+    vi.useFakeTimers();
+    const state = addFriendFromProfile(defaultAppState, {
+      username: "Neil",
+      name: "Neo",
+      refreshedAt: "2026-06-28T00:00:00.000Z"
+    });
+    document.body.innerHTML = `
+      <main id="main-outlet">
+        <a href="/u/other">Other</a>
+      </main>
+    `;
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn(async () => ({ ok: true, data: state })),
+        onMessage: {
+          addListener: vi.fn()
+        }
+      },
+      storage: {
+        local: createMockLocalStorage(),
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+
+    await import("./contentScript");
+    await Promise.resolve();
+    document.getElementById("main-outlet")?.insertAdjacentHTML(
+      "beforeend",
+      '<a href="/u/neil"><img class="avatar" src="/user_avatar/linux.do/neil/48/1.png" alt="">Neo</a>'
+    );
+    window.history.pushState({}, "", "/u/neil");
+    await vi.runOnlyPendingTimersAsync();
+
+    const friendLink = document.querySelector<HTMLAnchorElement>('a[href="/u/neil"]');
+    expect(friendLink?.querySelector(".linuxdo-friends-name-mark")?.textContent).toBe("Neo");
+    expect(friendLink?.querySelector("img")?.classList.contains("linuxdo-friends-friend-avatar")).toBe(true);
+    vi.useRealTimers();
   });
 
   it("injects a page launcher before the current-user header item and opens the native user menu friends tab", async () => {

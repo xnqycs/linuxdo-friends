@@ -23,6 +23,8 @@ import type {
 import appCss from "../styles/app.css?inline";
 
 const markerClass = "linuxdo-friends-marker";
+const friendAvatarClass = "linuxdo-friends-friend-avatar";
+const friendNameMarkClass = "linuxdo-friends-name-mark";
 const launcherId = "linuxdo-friends-launcher";
 const pageStyleId = "linuxdo-friends-page-style";
 const userMenuTabId = "linuxdo-friends-user-menu-tab";
@@ -37,20 +39,25 @@ let userMenuRoot: Root | null = null;
 let userMenuObserver: MutationObserver | null = null;
 let userMenuEnhanceTimer: number | null = null;
 let launcherPlacementTimer: number | null = null;
+let friendMarkerTimer: number | null = null;
+let suppressFriendMarkerMutations = false;
 let heartbeatTimer: number | null = null;
 let lastHeartbeatStatus: "pending" | "connected" | "disconnected" = "pending";
+let latestState: AppState | null = null;
 
 void init();
 subscribeToStorageChanges();
 subscribeToRuntimeMessages();
 startHeartbeat();
 startUserMenuIntegration();
+startRouteTracking();
 
 async function init() {
   const state = await getState();
   ensurePageStyle();
   ensureLauncher();
   if (!state) return;
+  latestState = state;
   markFriends(state);
 }
 
@@ -64,20 +71,24 @@ async function getState(): Promise<AppState | null> {
 }
 
 export function markFriends(state: AppState) {
+  ensurePageStyle();
+  suppressFriendMarkerMutations = true;
   clearMarkers();
   const friends = Object.keys(state.friends);
-  if (friends.length === 0) return;
-  const friendSet = new Set(friends);
-  const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href^="/u/"], a[href*="linux.do/u/"]'));
-  for (const link of links) {
-    const username = extractUsername(link);
-    if (!username || !friendSet.has(username) || link.querySelector(`.${markerClass}`)) continue;
-    const marker = document.createElement("span");
-    marker.className = markerClass;
-    marker.textContent = " 特别关注";
-    marker.title = state.friends[username]?.note || "佬朋友";
-    marker.style.cssText = "margin-left:4px;color:#5eead4;font-size:12px;font-weight:600;";
-    link.append(marker);
+  try {
+    if (friends.length === 0) return;
+    const friendSet = new Set(friends);
+    const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href^="/u/"], a[href*="linux.do/u/"]'));
+    for (const link of links) {
+      const username = extractUsername(link);
+      if (!username || !friendSet.has(username) || !isProfileIdentityLink(link)) continue;
+      markAvatarElements(link);
+      markNameText(link, getFriendDisplayName(state, username));
+    }
+  } finally {
+    window.setTimeout(() => {
+      suppressFriendMarkerMutations = false;
+    }, 0);
   }
 }
 
@@ -109,6 +120,77 @@ function ensurePageStyle() {
   const style = document.createElement("style");
   style.id = pageStyleId;
   style.textContent = `
+    :root {
+      --linuxdo-friends-accent: #5eead4;
+      --linuxdo-friends-accent-soft: rgba(94, 234, 212, 0.28);
+      --linuxdo-friends-accent-glow: rgba(94, 234, 212, 0.52);
+    }
+
+    .${friendNameMarkClass} {
+      position: relative !important;
+      display: inline-block !important;
+      isolation: isolate !important;
+      padding-inline: 1ch !important;
+      margin-inline: -1ch !important;
+      text-decoration: inherit !important;
+    }
+
+    .${friendNameMarkClass}::before {
+      content: "" !important;
+      position: absolute !important;
+      z-index: -1 !important;
+      left: 0 !important;
+      right: 0 !important;
+      top: 56% !important;
+      height: 34% !important;
+      border-radius: 999px 8px 999px 10px / 8px 999px 10px 999px !important;
+      background:
+        linear-gradient(
+          100deg,
+          transparent 0%,
+          color-mix(in srgb, var(--linuxdo-friends-accent) 20%, transparent) 10%,
+          color-mix(in srgb, var(--linuxdo-friends-accent) 40%, transparent) 47%,
+          color-mix(in srgb, var(--linuxdo-friends-accent) 22%, transparent) 88%,
+          transparent 100%
+        ) !important;
+      filter: blur(0.25px) !important;
+      transform: rotate(-1.2deg) !important;
+      pointer-events: none !important;
+    }
+
+    .${friendAvatarClass} {
+      border-radius: 999px !important;
+      animation: linuxdo-friends-avatar-breathe 2.2s ease-in-out infinite !important;
+      box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--linuxdo-friends-accent) 34%, transparent),
+        0 0 12px color-mix(in srgb, var(--linuxdo-friends-accent) 46%, transparent),
+        0 0 30px color-mix(in srgb, var(--linuxdo-friends-accent) 34%, transparent),
+        0 0 52px color-mix(in srgb, var(--linuxdo-friends-accent) 20%, transparent) !important;
+    }
+
+    @keyframes linuxdo-friends-avatar-breathe {
+      0%, 100% {
+        box-shadow:
+          0 0 0 1px color-mix(in srgb, var(--linuxdo-friends-accent) 22%, transparent),
+          0 0 8px color-mix(in srgb, var(--linuxdo-friends-accent) 24%, transparent),
+          0 0 20px color-mix(in srgb, var(--linuxdo-friends-accent) 16%, transparent),
+          0 0 34px color-mix(in srgb, var(--linuxdo-friends-accent) 8%, transparent);
+      }
+      50% {
+        box-shadow:
+          0 0 0 2px color-mix(in srgb, var(--linuxdo-friends-accent) 46%, transparent),
+          0 0 16px color-mix(in srgb, var(--linuxdo-friends-accent) 62%, transparent),
+          0 0 38px color-mix(in srgb, var(--linuxdo-friends-accent) 46%, transparent),
+          0 0 68px color-mix(in srgb, var(--linuxdo-friends-accent) 28%, transparent);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .${friendAvatarClass} {
+        animation: none !important;
+      }
+    }
+
     #${userMenuPanelId} {
       display: block;
       flex: 0 0 min(320px, calc(100vw - 64px));
@@ -151,9 +233,34 @@ function startUserMenuIntegration() {
   userMenuObserver = new MutationObserver(() => {
     scheduleUserMenuEnhancement();
     scheduleLauncherPlacement();
+    if (!suppressFriendMarkerMutations) scheduleFriendMarkers();
   });
   userMenuObserver.observe(document.body, { childList: true, subtree: true });
   window.addEventListener("load", () => scheduleLauncherPlacement(), { once: true });
+}
+
+function startRouteTracking() {
+  window.addEventListener("popstate", () => scheduleFriendMarkers());
+  wrapHistoryMethod("pushState");
+  wrapHistoryMethod("replaceState");
+}
+
+function wrapHistoryMethod(method: "pushState" | "replaceState") {
+  const original = window.history[method];
+  window.history[method] = function patchedHistoryMethod(this: History, ...args: Parameters<History[typeof method]>) {
+    const result = original.apply(this, args);
+    scheduleFriendMarkers();
+    return result;
+  } as History[typeof method];
+}
+
+function scheduleFriendMarkers() {
+  if (typeof window === "undefined" || !latestState) return;
+  if (friendMarkerTimer != null) return;
+  friendMarkerTimer = window.setTimeout(() => {
+    friendMarkerTimer = null;
+    if (latestState) markFriends(latestState);
+  }, 80);
 }
 
 function scheduleUserMenuEnhancement() {
@@ -340,6 +447,86 @@ function isSlideInUserMenu(menu: HTMLElement) {
 
 function clearMarkers() {
   document.querySelectorAll(`.${markerClass}`).forEach((marker) => marker.remove());
+  document.querySelectorAll(`.${friendAvatarClass}`).forEach((marker) => marker.classList.remove(friendAvatarClass));
+  document.querySelectorAll(`.${friendNameMarkClass}`).forEach((marker) => unwrapElement(marker));
+}
+
+function isProfileIdentityLink(link: HTMLAnchorElement): boolean {
+  try {
+    const url = new URL(link.href, location.origin);
+    if (url.hostname !== "linux.do" && url.origin !== location.origin) return false;
+    const parts = url.pathname.split("/").filter(Boolean);
+    return parts.length === 2 && parts[0] === "u" && Boolean(parts[1]);
+  } catch {
+    return false;
+  }
+}
+
+function markAvatarElements(link: HTMLAnchorElement) {
+  const avatarSelector = [
+    "img.avatar",
+    "img.user-avatar",
+    "img[src*='/user_avatar/']",
+    "img[src*='/letter_avatar/']",
+    ".avatar img",
+    ".user-avatar img"
+  ].join(",");
+  for (const avatar of link.querySelectorAll<HTMLElement>(avatarSelector)) {
+    avatar.classList.add(friendAvatarClass);
+  }
+}
+
+function markNameText(link: HTMLAnchorElement, displayName: string | null) {
+  if (!displayName) return;
+  const target = findNameTextNode(link, displayName);
+  if (!target?.textContent?.trim()) return;
+  const wrapper = document.createElement("span");
+  wrapper.className = friendNameMarkClass;
+  target.parentNode?.insertBefore(wrapper, target);
+  wrapper.append(target);
+}
+
+function findNameTextNode(link: HTMLAnchorElement, displayName: string): Text | null {
+  const walker = document.createTreeWalker(link, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const text = node.textContent?.trim();
+      if (!text || !isSameDisplayName(text, displayName)) return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.closest("svg, img, .avatar, .user-avatar, .username, .user-name, .mention")) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  return walker.nextNode() as Text | null;
+}
+
+function getFriendDisplayName(state: AppState, username: Username): string | null {
+  const rawName = state.friendProfiles[username]?.name ?? state.followedUsers[username]?.name;
+  const displayName = rawName?.trim();
+  if (!displayName) return null;
+  if (normalizeIdentityText(displayName) === username) return null;
+  return displayName;
+}
+
+function isSameDisplayName(text: string, displayName: string) {
+  return normalizeDisplayText(text) === normalizeDisplayText(displayName);
+}
+
+function normalizeDisplayText(text: string) {
+  return text.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function normalizeIdentityText(text: string) {
+  return text.trim().replace(/^@/, "").toLocaleLowerCase();
+}
+
+function unwrapElement(element: Element) {
+  const parent = element.parentNode;
+  if (!parent) return;
+  while (element.firstChild) {
+    parent.insertBefore(element.firstChild, element);
+  }
+  element.remove();
 }
 
 async function openFriendsUserMenu() {
