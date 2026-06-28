@@ -19,7 +19,7 @@ describe("extension manifest safety", () => {
         run_at: "document_idle"
       }
     ]);
-    expect(manifest.host_permissions).toEqual(["https://linux.do/*"]);
+    expect(manifest.host_permissions).toEqual(["https://api.github.com/*", "https://linux.do/*"]);
   });
 
   it("does not request continuous polling, cookie, proxy, or external messaging surfaces", () => {

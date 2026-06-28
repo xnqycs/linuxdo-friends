@@ -210,6 +210,18 @@ export interface PageRepairResult {
   openedNewTab?: boolean;
 }
 
+export type UpdateCheckStatus = "idle" | "checking" | "up-to-date" | "update-available" | "no-release" | "error";
+
+export interface UpdateCheckState {
+  installedVersion: string;
+  latestReleaseUrl: string;
+  status: UpdateCheckStatus;
+  latestVersion?: string;
+  checkedAt?: string;
+  error?: string;
+  source?: "github_release";
+}
+
 export type RefreshFailureReason =
   | "unavailable"
   | "blocked"
@@ -246,6 +258,8 @@ export type BackgroundCommand =
   | { type: "cacheAvatars"; usernames?: Username[] }
   | { type: "getSiteDataProgress" }
   | { type: "getPageScriptStatus" }
+  | { type: "getUpdateCheck" }
+  | { type: "checkForUpdates"; force?: boolean }
   | { type: "repairLinuxDoPageScript"; tabId?: number }
   | { type: "openSidePanel" }
   | { type: "openOptionsPage" }

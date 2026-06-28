@@ -299,6 +299,56 @@ describe("FriendsApp UI scene persistence", () => {
     expect(container.querySelector(".settings-chip")).toBeTruthy();
   });
 
+  it("shows installed version and triggers an update check when the plugin opens", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({ session });
+    const { container } = await renderFriendsApp("side-panel");
+
+    expect(container.querySelector(".version-current")?.textContent).toBe("v1.0.1");
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "getUpdateCheck" });
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "checkForUpdates", force: undefined });
+  });
+
+  it("highlights a newer version in the main plugin surfaces", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    setupChrome({
+      session,
+      updateCheck: {
+        installedVersion: "1.0.0",
+        latestReleaseUrl: "https://github.com/LeUKi/linuxdo-friends/releases/latest",
+        status: "update-available",
+        latestVersion: "1.1.0",
+        checkedAt: "2026-06-28T00:00:00.000Z",
+        source: "github_release"
+      }
+    });
+    const { container } = await renderFriendsApp("in-page");
+
+    const link = container.querySelector<HTMLAnchorElement>(".version-update-link");
+    expect(link?.textContent).toContain("新 v1.1.0");
+    expect(link?.href).toBe("https://github.com/LeUKi/linuxdo-friends/releases/latest");
+  });
+
+  it("keeps update-check failures quiet in the main plugin surfaces", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    setupChrome({
+      session,
+      updateCheck: {
+        installedVersion: "1.0.0",
+        latestReleaseUrl: "https://github.com/LeUKi/linuxdo-friends/releases/latest",
+        status: "error",
+        checkedAt: "2026-06-28T00:00:00.000Z",
+        error: "GitHub Release 检查失败：HTTP 403",
+        source: "github_release"
+      }
+    });
+    const { container } = await renderFriendsApp("side-panel");
+
+    expect(container.querySelector(".version-current")?.textContent).toBe("v1.0.0");
+    expect(container.querySelector(".version-update-link")).toBeFalsy();
+    expect(container.textContent).not.toContain("GitHub Release 检查失败");
+  });
+
   it("opens the options page from the browser side panel surface", async () => {
     const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
     const chromeMock = setupChrome({
@@ -360,7 +410,15 @@ function setupChrome({
     username: "neo",
     name: "Neo",
     refreshedAt: "2026-06-28T00:00:00.000Z"
-  })
+  }),
+  updateCheck = {
+    installedVersion: "1.0.1",
+    latestReleaseUrl: "https://github.com/LeUKi/linuxdo-friends/releases/latest",
+    status: "up-to-date" as const,
+    latestVersion: "1.0.1",
+    checkedAt: "2026-06-28T00:00:00.000Z",
+    source: "github_release" as const
+  }
 }: {
   pageStatus?: {
     status: "connected" | "challenge" | "stale" | "missing";
@@ -372,6 +430,15 @@ function setupChrome({
   progress?: SiteDataTaskProgress | null;
   session: ReturnType<typeof createMockStorage>;
   state?: typeof defaultAppState;
+  updateCheck?: {
+    installedVersion: string;
+    latestReleaseUrl: string;
+    status: "idle" | "checking" | "up-to-date" | "update-available" | "no-release" | "error";
+    latestVersion?: string;
+    checkedAt?: string;
+    error?: string;
+    source?: "github_release";
+  };
 }) {
   const storageListeners: Array<(changes: Record<string, chrome.storage.StorageChange>, areaName: string) => void> = [];
   const sendMessage = vi.fn(async (message) => {
@@ -380,6 +447,8 @@ function setupChrome({
       return { ok: true, data: pageStatus };
     }
     if (message.type === "getSiteDataProgress") return { ok: true, data: progress };
+    if (message.type === "getUpdateCheck") return { ok: true, data: updateCheck };
+    if (message.type === "checkForUpdates") return { ok: true, data: updateCheck };
     if (message.type === "openSidePanel") return { ok: true, data: { message: "已打开插件侧栏。" } };
     if (message.type === "openOptionsPage") return { ok: true, data: { message: "已打开配置页。" } };
     return { ok: true, data: state };
@@ -395,6 +464,7 @@ function setupChrome({
     },
     runtime: {
       sendMessage,
+      getManifest: vi.fn(() => ({ version: "1.0.1" })),
       onMessage: {
         addListener: vi.fn()
       }

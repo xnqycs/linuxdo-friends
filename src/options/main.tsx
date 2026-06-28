@@ -1,17 +1,38 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useAtom, useSetAtom } from "jotai";
-import { appStateAtom, loadStateAtom } from "../state/atoms";
+import {
+  appStateAtom,
+  checkForUpdatesAtom,
+  loadStateAtom,
+  loadUpdateCheckAtom,
+  observeUpdateCheckAtom,
+  updateCheckAtom
+} from "../state/atoms";
 import { sendCommand } from "../messages/client";
+import { VersionBadge, VersionDiagnostics } from "../app/VersionStatus";
 import "../styles/app.css";
 
-function OptionsApp() {
+export function OptionsApp() {
   const [state, setState] = useAtom(appStateAtom);
+  const [updateCheck] = useAtom(updateCheckAtom);
   const loadState = useSetAtom(loadStateAtom);
+  const loadUpdateCheck = useSetAtom(loadUpdateCheckAtom);
+  const checkForUpdates = useSetAtom(checkForUpdatesAtom);
+  const observeUpdateCheck = useSetAtom(observeUpdateCheckAtom);
+  const [relativeNow, setRelativeNow] = useState(() => Date.now());
 
   useEffect(() => {
     void loadState();
-  }, [loadState]);
+    void loadUpdateCheck();
+    void checkForUpdates();
+    const cleanupUpdateCheck = observeUpdateCheck();
+    const interval = window.setInterval(() => setRelativeNow(Date.now()), 30_000);
+    return () => {
+      cleanupUpdateCheck?.();
+      window.clearInterval(interval);
+    };
+  }, [checkForUpdates, loadState, loadUpdateCheck, observeUpdateCheck]);
 
   async function updateSettings(patch: Partial<typeof state.settings>) {
     const response = await sendCommand<typeof state>({ type: "updateSettings", settings: patch });
@@ -25,7 +46,12 @@ function OptionsApp() {
           <p className="eyebrow">LinuxDo Friends</p>
           <h1>佬朋友设置</h1>
         </div>
+        <div className="header-status">
+          <VersionBadge state={updateCheck} />
+        </div>
       </header>
+
+      <VersionDiagnostics now={relativeNow} onCheck={() => void checkForUpdates(true)} state={updateCheck} />
 
       <section className="panel">
         <h2>刷新策略</h2>
@@ -62,4 +88,7 @@ function OptionsApp() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<OptionsApp />);
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  createRoot(rootElement).render(<OptionsApp />);
+}

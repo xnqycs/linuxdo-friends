@@ -83,7 +83,7 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-tag 必须匹配 `v1.0.0` 这种格式。构建完成后，GitHub Actions 会上传 `linuxdo-friends-v1.0.0.zip` 作为 artifact。
+tag 必须匹配 `v1.0.0` 这种格式。构建完成后，GitHub Actions 会创建对应的 GitHub Release，并上传 `linuxdo-friends-v1.0.0.zip`。
 
 ## 许可证
 

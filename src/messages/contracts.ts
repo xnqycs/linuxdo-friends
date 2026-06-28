@@ -8,10 +8,13 @@ export function isBackgroundCommand(value: unknown): value is BackgroundCommand 
     case "syncFollowedUsers":
     case "getSiteDataProgress":
     case "getPageScriptStatus":
+    case "getUpdateCheck":
     case "openSidePanel":
     case "openOptionsPage":
     case "openLinuxDoHome":
       return true;
+    case "checkForUpdates":
+      return command.force === undefined || typeof command.force === "boolean";
     case "repairLinuxDoPageScript":
       return command.tabId === undefined || isPositiveInteger(command.tabId);
     case "seedFollowedUser":

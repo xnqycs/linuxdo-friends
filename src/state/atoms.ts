@@ -7,8 +7,10 @@ import type {
   FriendProfileSummary,
   PageRepairResult,
   PageScriptStatusSnapshot,
-  SiteDataTaskProgress
+  SiteDataTaskProgress,
+  UpdateCheckState
 } from "../shared/types";
+import { defaultUpdateCheckState } from "../domain/versionCheck";
 import { defaultAppState } from "../domain/defaultState";
 import { sendCommand } from "../messages/client";
 import {
@@ -18,12 +20,14 @@ import {
 } from "../storage/pageScriptStatusStorage";
 import { loadSiteDataProgressState, siteDataProgressFromStorageChanges } from "../storage/siteDataProgressStorage";
 import { APP_STATE_STORAGE_KEY } from "../storage/storage";
+import { updateCheckStateFromStorageChanges } from "../storage/updateCheckStorage";
 
 export const appStateAtom = atom<AppState>(defaultAppState);
 export const loadingAtom = atom(false);
 export const statusMessageAtom = atom<string | null>(null);
 export const siteDataProgressAtom = atom<SiteDataTaskProgress | null>(null);
 export const pageScriptStatusAtom = atom<PageScriptStatusSnapshot>(defaultPageScriptStatus());
+export const updateCheckAtom = atom<UpdateCheckState>(defaultUpdateCheckState(installedVersion()));
 export const clearStatusMessageAtom = atom(null, (_get, set) => {
   set(statusMessageAtom, null);
 });
@@ -33,9 +37,11 @@ let pageScriptStatusListenerRegistered = false;
 let appStateStorageListenerRegistered = false;
 let siteDataProgressStorageListenerRegistered = false;
 let pageScriptStatusStorageListenerRegistered = false;
+let updateCheckStorageListenerRegistered = false;
 const siteDataProgressSubscribers = new Set<Setter>();
 const pageScriptStatusSubscribers = new Set<Setter>();
 const appStateStorageSubscribers = new Set<Setter>();
+const updateCheckSubscribers = new Set<Setter>();
 
 export const loadStateAtom = atom(null, async (_get, set) => {
   set(loadingAtom, true);
@@ -78,8 +84,10 @@ export function resetRuntimeObserversForTest() {
   pageScriptStatusListenerRegistered = false;
   siteDataProgressStorageListenerRegistered = false;
   pageScriptStatusStorageListenerRegistered = false;
+  updateCheckStorageListenerRegistered = false;
   siteDataProgressSubscribers.clear();
   pageScriptStatusSubscribers.clear();
+  updateCheckSubscribers.clear();
 }
 
 export const loadSiteDataProgressAtom = atom(null, async (_get, set) => {
@@ -103,6 +111,29 @@ export const loadPageScriptStatusAtom = atom(null, async (_get, set) => {
   const response = await sendCommand<PageScriptStatusSnapshot>({ type: "getPageScriptStatus" });
   if (response.ok && isPageScriptStatusSnapshot(response.data)) {
     set(pageScriptStatusAtom, response.data);
+  }
+});
+
+export const loadUpdateCheckAtom = atom(null, async (_get, set) => {
+  const response = await sendCommand<UpdateCheckState>({ type: "getUpdateCheck" });
+  if (response.ok) {
+    set(updateCheckAtom, response.data);
+  }
+});
+
+export const checkForUpdatesAtom = atom(null, async (get, set, force?: boolean) => {
+  const current = get(updateCheckAtom);
+  set(updateCheckAtom, { ...current, status: "checking" });
+  const response = await sendCommand<UpdateCheckState>({ type: "checkForUpdates", force });
+  if (response.ok) {
+    set(updateCheckAtom, response.data);
+  } else {
+    set(updateCheckAtom, {
+      ...current,
+      status: "error",
+      checkedAt: new Date().toISOString(),
+      error: response.error || "检查更新失败。"
+    });
   }
 });
 
@@ -153,6 +184,24 @@ export const observePageScriptStatusAtom = atom(null, (_get, set) => {
   }
   return () => {
     pageScriptStatusSubscribers.delete(set);
+  };
+});
+
+export const observeUpdateCheckAtom = atom(null, (_get, set) => {
+  if (typeof chrome === "undefined" || !chrome.storage?.onChanged) return undefined;
+  updateCheckSubscribers.add(set);
+  if (!updateCheckStorageListenerRegistered) {
+    const storageListener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+      if (areaName !== "local") return;
+      const state = updateCheckStateFromStorageChanges(changes, installedVersion());
+      if (state === undefined) return;
+      updateCheckSubscribers.forEach((subscriber) => subscriber(updateCheckAtom, state));
+    };
+    chrome.storage.onChanged.addListener(storageListener);
+    updateCheckStorageListenerRegistered = true;
+  }
+  return () => {
+    updateCheckSubscribers.delete(set);
   };
 });
 
@@ -319,4 +368,8 @@ function mergeObservedAppState(stored: Partial<AppState>): AppState {
     currentAccount: stored.currentAccount,
     lastSync: stored.lastSync
   };
+}
+
+function installedVersion(): string {
+  return typeof chrome === "undefined" ? "0.0.0" : (chrome.runtime?.getManifest?.().version ?? "0.0.0");
 }

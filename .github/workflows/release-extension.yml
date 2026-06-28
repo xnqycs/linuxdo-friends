@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package:
@@ -49,3 +49,11 @@ jobs:
           name: linuxdo-friends-${{ github.ref_name }}
           path: packages/linuxdo-friends-${{ github.ref_name }}.zip
           if-no-files-found: error
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: packages/linuxdo-friends-${{ github.ref_name }}.zip
+          fail_on_unmatched_files: true

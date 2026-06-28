@@ -10,6 +10,13 @@ import {
   type ActivityRequestStep
 } from "../domain/activityRefresh";
 import { addFriendFromKnownUser, addFriendFromProfile, removeFriend, updateFriend, upsertFollowedUser, upsertFriendProfile } from "../domain/friends";
+import {
+  defaultUpdateCheckState,
+  GITHUB_LATEST_RELEASE_API,
+  isUpdateCheckCacheFresh,
+  updateCheckFailureState,
+  updateCheckStateFromRelease
+} from "../domain/versionCheck";
 import { isBackgroundCommand } from "../messages/contracts";
 import { nowIso } from "../shared/time";
 import type {
@@ -32,11 +39,13 @@ import type {
   ProfileRefreshTaskProgress,
   RefreshResult,
   SiteDataTaskProgress,
+  UpdateCheckState,
   Username
 } from "../shared/types";
 import { savePageScriptStatusState } from "../storage/pageScriptStatusStorage";
 import { saveSiteDataProgressState } from "../storage/siteDataProgressStorage";
 import { loadState, saveState, updateState } from "../storage/storage";
+import { loadUpdateCheckState, saveUpdateCheckState } from "../storage/updateCheckStorage";
 
 const refreshAdapter = createRefreshAdapter();
 interface ActiveSiteDataTask {
@@ -121,6 +130,10 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
       return ok(activeSiteDataTask?.progress ?? lastSiteDataProgress);
     case "getPageScriptStatus":
       return ok(pageScriptStatusSnapshot());
+    case "getUpdateCheck":
+      return ok(await loadUpdateCheckState(installedVersion()));
+    case "checkForUpdates":
+      return ok(await checkForUpdates(command.force === true));
     case "repairLinuxDoPageScript":
       return ok(await repairLinuxDoPageScript(command.tabId));
     case "openSidePanel":
@@ -140,6 +153,36 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
         }))
       );
   }
+}
+
+async function checkForUpdates(force: boolean): Promise<UpdateCheckState> {
+  const installed = installedVersion();
+  const cached = await loadUpdateCheckState(installed);
+  if (!force && cached.checkedAt && isUpdateCheckCacheFresh(cached)) return cached;
+
+  let next: UpdateCheckState;
+  try {
+    const response = await fetch(GITHUB_LATEST_RELEASE_API, {
+      headers: {
+        Accept: "application/vnd.github+json"
+      }
+    });
+    if (response.status === 404) {
+      next = updateCheckFailureState(installed, "no-release", "GitHub 仓库还没有 latest release。");
+    } else if (!response.ok) {
+      next = updateCheckFailureState(installed, "error", `GitHub Release 检查失败：HTTP ${response.status}`);
+    } else {
+      next = updateCheckStateFromRelease(installed, (await response.json()) as Record<string, unknown>);
+    }
+  } catch (error) {
+    next = updateCheckFailureState(installed, "error", error instanceof Error ? error.message : "GitHub Release 检查失败。");
+  }
+  await saveUpdateCheckState(next);
+  return next;
+}
+
+function installedVersion(): string {
+  return chrome.runtime.getManifest?.().version ?? defaultUpdateCheckState("0.0.0").installedVersion;
 }
 
 async function openSidePanel(sender: chrome.runtime.MessageSender): Promise<{ message: string }> {

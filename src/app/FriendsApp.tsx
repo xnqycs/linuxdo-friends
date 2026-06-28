@@ -20,15 +20,18 @@ import {
   addFriendFromKnownUserAtom,
   appStateAtom,
   cacheAvatarsAtom,
+  checkForUpdatesAtom,
   clearStatusMessageAtom,
   loadPageScriptStatusAtom,
   loadingAtom,
   loadSiteDataProgressAtom,
   loadStateAtom,
+  loadUpdateCheckAtom,
   lookupFriendProfileAtom,
   observeAppStateAtom,
   observePageScriptStatusAtom,
   observeSiteDataProgressAtom,
+  observeUpdateCheckAtom,
   openLinuxDoHomeAtom,
   openOptionsPageAtom,
   openSidePanelAtom,
@@ -39,8 +42,10 @@ import {
   removeFriendAtom,
   siteDataProgressAtom,
   statusMessageAtom,
-  syncFollowsAtom
+  syncFollowsAtom,
+  updateCheckAtom
 } from "../state/atoms";
+import { VersionBadge } from "./VersionStatus";
 import { loadUiSceneAtom, observeUiSceneAtom, uiSceneAtom, updateUiSceneAtom } from "../state/uiSceneAtoms";
 import { formatRelativeTime } from "../shared/time";
 import type {
@@ -142,15 +147,19 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const [status] = useAtom(statusMessageAtom);
   const [siteDataProgress] = useAtom(siteDataProgressAtom);
   const [pageScriptStatus] = useAtom(pageScriptStatusAtom);
+  const [updateCheck] = useAtom(updateCheckAtom);
   const [uiScene] = useAtom(uiSceneAtom);
+  const checkForUpdates = useSetAtom(checkForUpdatesAtom);
   const loadState = useSetAtom(loadStateAtom);
   const loadPageScriptStatus = useSetAtom(loadPageScriptStatusAtom);
   const loadSiteDataProgress = useSetAtom(loadSiteDataProgressAtom);
+  const loadUpdateCheck = useSetAtom(loadUpdateCheckAtom);
   const loadUiScene = useSetAtom(loadUiSceneAtom);
   const lookupFriendProfile = useSetAtom(lookupFriendProfileAtom);
   const observeAppState = useSetAtom(observeAppStateAtom);
   const observePageScriptStatus = useSetAtom(observePageScriptStatusAtom);
   const observeSiteDataProgress = useSetAtom(observeSiteDataProgressAtom);
+  const observeUpdateCheck = useSetAtom(observeUpdateCheckAtom);
   const observeUiScene = useSetAtom(observeUiSceneAtom);
   const addFriendFromKnownUser = useSetAtom(addFriendFromKnownUserAtom);
   const cacheAvatars = useSetAtom(cacheAvatarsAtom);
@@ -173,24 +182,31 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
     void loadState().finally(() => setAppStateLoaded(true));
     void loadPageScriptStatus();
     void loadSiteDataProgress();
+    void loadUpdateCheck();
+    void checkForUpdates();
     const cleanupAppState = observeAppState();
     const cleanupUiScene = observeUiScene();
     const cleanupPageScriptStatus = observePageScriptStatus();
     const cleanupSiteDataProgress = observeSiteDataProgress();
+    const cleanupUpdateCheck = observeUpdateCheck();
     return () => {
       cleanupAppState?.();
       cleanupUiScene?.();
       cleanupPageScriptStatus?.();
       cleanupSiteDataProgress?.();
+      cleanupUpdateCheck?.();
     };
   }, [
+    checkForUpdates,
     loadPageScriptStatus,
     loadSiteDataProgress,
     loadState,
+    loadUpdateCheck,
     loadUiScene,
     observeAppState,
     observePageScriptStatus,
     observeSiteDataProgress,
+    observeUpdateCheck,
     observeUiScene
   ]);
 
@@ -254,6 +270,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
               <h1>佬朋友</h1>
             </div>
             <div className="header-status">
+              <VersionBadge state={updateCheck} />
               {surface === "in-page" ? (
                 <div className="header-actions">
                   <SidePanelLauncherButton status={pageScriptStatus} onOpen={() => void openSidePanel()} />

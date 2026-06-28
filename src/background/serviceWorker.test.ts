@@ -29,6 +29,9 @@ describe("message contracts", () => {
     expect(isBackgroundCommand({ type: "cacheAvatars", usernames: ["neil"] })).toBe(true);
     expect(isBackgroundCommand({ type: "getSiteDataProgress" })).toBe(true);
     expect(isBackgroundCommand({ type: "getPageScriptStatus" })).toBe(true);
+    expect(isBackgroundCommand({ type: "getUpdateCheck" })).toBe(true);
+    expect(isBackgroundCommand({ type: "checkForUpdates" })).toBe(true);
+    expect(isBackgroundCommand({ type: "checkForUpdates", force: true })).toBe(true);
     expect(isBackgroundCommand({ type: "repairLinuxDoPageScript", tabId: 123 })).toBe(true);
     expect(isBackgroundCommand({ type: "openSidePanel" })).toBe(true);
     expect(isBackgroundCommand({ type: "openOptionsPage" })).toBe(true);
@@ -47,6 +50,7 @@ describe("message contracts", () => {
     expect(isBackgroundCommand({ type: "refreshFriendProfiles", usernames: ["ok", ""] })).toBe(false);
     expect(isBackgroundCommand({ type: "cacheAvatars", usernames: ["ok", ""] })).toBe(false);
     expect(isBackgroundCommand({ type: "repairLinuxDoPageScript", tabId: 0 })).toBe(false);
+    expect(isBackgroundCommand({ type: "checkForUpdates", force: "yes" })).toBe(false);
     expect(isBackgroundCommand({ type: "refreshFriendActivity", scope: { kind: "bad", usernames: ["ok"] } })).toBe(false);
     expect(isBackgroundCommand({ type: "seedFollowedUser", user: { name: "No username" } })).toBe(false);
     expect(isBackgroundCommand({ type: "updateSettings", settings: { refreshIntervalMinutes: 1 } })).toBe(false);
@@ -66,6 +70,84 @@ describe("message contracts", () => {
           allowInactiveTabFallback: false,
           refreshIntervalMinutes: 60
         }
+      }
+    });
+  });
+
+  it("checks GitHub latest release and persists an available update", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ tag_name: "v1.1.0", html_url: "https://github.com/LeUKi/linuxdo-friends/releases/tag/v1.1.0" }), { status: 200 }))
+    );
+    const { send, localStorage } = await setupWorker();
+
+    const response = await send({ type: "checkForUpdates", force: true });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        installedVersion: "1.0.0",
+        latestVersion: "1.1.0",
+        status: "update-available"
+      }
+    });
+    expect(fetch).toHaveBeenCalledWith("https://api.github.com/repos/LeUKi/linuxdo-friends/releases/latest", expect.any(Object));
+    expect(localStorage.dump()).toMatchObject({
+      linuxdoFriendsUpdateCheck: {
+        installedVersion: "1.0.0",
+        latestVersion: "1.1.0",
+        status: "update-available"
+      }
+    });
+  });
+
+  it("reuses cached update checks within the 12-hour TTL", async () => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal("fetch", fetchImpl);
+    const cached = {
+      installedVersion: "1.0.0",
+      latestReleaseUrl: "https://github.com/LeUKi/linuxdo-friends/releases/latest",
+      status: "up-to-date",
+      latestVersion: "1.0.0",
+      checkedAt: new Date().toISOString(),
+      source: "github_release"
+    };
+    const { send } = await setupWorker({ initialUpdateCheck: cached });
+
+    const response = await send({ type: "checkForUpdates" });
+
+    expect(response).toMatchObject({ ok: true, data: cached });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("records a quiet no-release update-check state for GitHub 404", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not found", { status: 404 })));
+    const { send } = await setupWorker();
+
+    const response = await send({ type: "checkForUpdates", force: true });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        installedVersion: "1.0.0",
+        status: "no-release",
+        error: "GitHub 仓库还没有 latest release。"
+      }
+    });
+  });
+
+  it("records update-check failures as diagnostics instead of throwing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("rate limit", { status: 403 })));
+    const { send } = await setupWorker();
+
+    const response = await send({ type: "checkForUpdates", force: true });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        installedVersion: "1.0.0",
+        status: "error",
+        error: "GitHub Release 检查失败：HTTP 403"
       }
     });
   });
@@ -702,7 +784,9 @@ type MockTabs = {
   create?: ReturnType<typeof vi.fn>;
 };
 
-async function setupWorker(overrides: { tabs?: MockTabs; initialState?: unknown; includeSessionAccessLevel?: boolean } = {}) {
+async function setupWorker(
+  overrides: { tabs?: MockTabs; initialState?: unknown; initialUpdateCheck?: unknown; includeSessionAccessLevel?: boolean } = {}
+) {
   let listener: ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response: unknown) => void) => boolean) | null = null;
   const runtime = {
     sendMessage: vi.fn(),
@@ -734,10 +818,17 @@ async function setupWorker(overrides: { tabs?: MockTabs; initialState?: unknown;
     ...createMockStorage({}),
     ...(overrides.includeSessionAccessLevel === false ? {} : { setAccessLevel: vi.fn() })
   };
+  const localStorage = createMockStorage({
+    ...(overrides.initialState ? { linuxdoFriendsState: overrides.initialState } : {}),
+    ...(overrides.initialUpdateCheck ? { linuxdoFriendsUpdateCheck: overrides.initialUpdateCheck } : {})
+  });
   vi.stubGlobal("chrome", {
-    runtime,
+    runtime: {
+      ...runtime,
+      getManifest: vi.fn(() => ({ version: "1.0.0" }))
+    },
     storage: {
-      local: createMockStorage(overrides.initialState ? { linuxdoFriendsState: overrides.initialState } : {}),
+      local: localStorage,
       session: sessionStorage
     },
     tabs,
@@ -749,6 +840,7 @@ async function setupWorker(overrides: { tabs?: MockTabs; initialState?: unknown;
   expect(listener).toBeTruthy();
   return {
     runtime,
+    localStorage,
     sidePanel,
     sessionStorage,
     tabs,

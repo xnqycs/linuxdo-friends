@@ -179,6 +179,89 @@ input[type="checkbox"] {
   font-size: 12px;
 }
 
+.version-badge {
+  display: inline-flex;
+  max-width: 156px;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.version-current {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 72px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  padding: 3px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-update-link,
+.version-diagnostic-link {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+  color: var(--warning);
+  font-weight: 700;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-update-link {
+  max-width: 76px;
+  border: 1px solid var(--warning-border);
+  border-radius: 999px;
+  background: var(--warning-soft);
+  padding: 3px 7px;
+}
+
+.version-update-link:hover,
+.version-diagnostic-link:hover {
+  color: var(--boost-text);
+  text-decoration: underline;
+}
+
+.version-diagnostic-grid {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
+  gap: 8px 12px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.version-diagnostic-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-diagnostic-error {
+  margin: 12px 0 0;
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  padding: 8px 10px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .header-status {
   display: grid;
   justify-items: end;
