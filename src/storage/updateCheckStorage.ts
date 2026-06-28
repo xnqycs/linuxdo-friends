@@ -1,4 +1,4 @@
-import { defaultUpdateCheckState, GITHUB_LATEST_RELEASE_URL } from "../domain/versionCheck";
+import { compareVersions, defaultUpdateCheckState, GITHUB_LATEST_RELEASE_URL } from "../domain/versionCheck";
 import type { UpdateCheckState, UpdateCheckStatus } from "../shared/types";
 
 export const UPDATE_CHECK_STORAGE_KEY = "linuxdoFriendsUpdateCheck";
@@ -48,15 +48,25 @@ export function normalizeUpdateCheckState(value: unknown, installedVersion: stri
   if (!isRecord(value) || !isUpdateCheckStatus(value.status)) {
     return defaultUpdateCheckState(installedVersion);
   }
+  const latestVersion = optionalString(value.latestVersion);
+  const status = normalizeCachedStatus(value.status, latestVersion, installedVersion);
   return {
     installedVersion,
     latestReleaseUrl: typeof value.latestReleaseUrl === "string" && value.latestReleaseUrl ? value.latestReleaseUrl : GITHUB_LATEST_RELEASE_URL,
-    status: value.status,
-    latestVersion: optionalString(value.latestVersion),
+    status,
+    latestVersion,
     checkedAt: optionalString(value.checkedAt),
-    error: optionalString(value.error),
+    error: status === "error" ? (optionalString(value.error) ?? "缓存的 Release 版本号无法识别。") : optionalString(value.error),
     source: value.source === "github_release" ? "github_release" : undefined
   };
+}
+
+function normalizeCachedStatus(status: UpdateCheckStatus, latestVersion: string | undefined, installedVersion: string): UpdateCheckStatus {
+  if (status !== "update-available" && status !== "up-to-date") return status;
+  if (!latestVersion) return status;
+  const comparison = compareVersions(latestVersion, installedVersion);
+  if (comparison == null) return "error";
+  return comparison > 0 ? "update-available" : "up-to-date";
 }
 
 function getChromeLocalStorage(): LocalStorageLike | null {

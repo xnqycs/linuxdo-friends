@@ -120,6 +120,25 @@ describe("message contracts", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("deduplicates concurrent update checks before the cache is written", async () => {
+    const { fetchImpl, release } = createPendingJsonFetch({
+      tag_name: "v1.1.0",
+      html_url: "https://github.com/LeUKi/linuxdo-friends/releases/tag/v1.1.0"
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    const { send } = await setupWorker();
+
+    const first = send({ type: "checkForUpdates", force: true });
+    const second = send({ type: "checkForUpdates", force: true });
+    await Promise.resolve();
+    release();
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+
+    expect(firstResponse).toMatchObject({ ok: true, data: { status: "update-available", latestVersion: "1.1.0" } });
+    expect(secondResponse).toMatchObject({ ok: true, data: { status: "update-available", latestVersion: "1.1.0" } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("records a quiet no-release update-check state for GitHub 404", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("not found", { status: 404 })));
     const { send } = await setupWorker();
@@ -862,6 +881,19 @@ function createPendingChallengeFetch() {
     fetchImpl: vi.fn(() => pendingFetch),
     release() {
       resolveFetch(new Response("Enable JavaScript and cookies to continue", { status: 429 }));
+    }
+  };
+}
+
+function createPendingJsonFetch(payload: unknown) {
+  let resolveFetch: (response: Response) => void = () => undefined;
+  const pendingFetch = new Promise<Response>((resolve) => {
+    resolveFetch = resolve;
+  });
+  return {
+    fetchImpl: vi.fn(() => pendingFetch),
+    release() {
+      resolveFetch(new Response(JSON.stringify(payload), { status: 200 }));
     }
   };
 }

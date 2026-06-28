@@ -55,6 +55,7 @@ interface ActiveSiteDataTask {
 }
 
 let activeSiteDataTask: ActiveSiteDataTask | null = null;
+let activeUpdateCheck: Promise<UpdateCheckState> | null = null;
 let lastSiteDataProgress: SiteDataTaskProgress | null = null;
 const pageScriptHeartbeats = new Map<number, PageScriptHeartbeat>();
 const heartbeatFreshMs = 45_000;
@@ -159,7 +160,16 @@ async function checkForUpdates(force: boolean): Promise<UpdateCheckState> {
   const installed = installedVersion();
   const cached = await loadUpdateCheckState(installed);
   if (!force && cached.checkedAt && isUpdateCheckCacheFresh(cached)) return cached;
+  if (activeUpdateCheck) return activeUpdateCheck;
 
+  const request = fetchLatestReleaseUpdateState(installed).finally(() => {
+    if (activeUpdateCheck === request) activeUpdateCheck = null;
+  });
+  activeUpdateCheck = request;
+  return request;
+}
+
+async function fetchLatestReleaseUpdateState(installed: string): Promise<UpdateCheckState> {
   let next: UpdateCheckState;
   try {
     const response = await fetch(GITHUB_LATEST_RELEASE_API, {
