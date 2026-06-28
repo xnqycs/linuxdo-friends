@@ -1,11 +1,13 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useAtom, useSetAtom } from "jotai";
 import {
   appStateAtom,
   checkForUpdatesAtom,
   clearCacheAtom,
+  exportConfigAtom,
   identifyCurrentAccountAtom,
+  importConfigAtom,
   loadStateAtom,
   loadUpdateCheckAtom,
   observeUpdateCheckAtom,
@@ -23,10 +25,14 @@ export function OptionsApp() {
   const loadUpdateCheck = useSetAtom(loadUpdateCheckAtom);
   const checkForUpdates = useSetAtom(checkForUpdatesAtom);
   const clearCache = useSetAtom(clearCacheAtom);
+  const exportConfig = useSetAtom(exportConfigAtom);
   const identifyCurrentAccount = useSetAtom(identifyCurrentAccountAtom);
+  const importConfig = useSetAtom(importConfigAtom);
   const observeUpdateCheck = useSetAtom(observeUpdateCheckAtom);
   const resetExtension = useSetAtom(resetExtensionAtom);
   const [relativeNow, setRelativeNow] = useState(() => Date.now());
+  const [configMessage, setConfigMessage] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     void loadState();
@@ -56,6 +62,35 @@ export function OptionsApp() {
   async function handleResetExtension() {
     if (!window.confirm("确认全量重置佬朋友？这会清空佬朋友、设置、账号和所有缓存。")) return;
     await resetExtension();
+  }
+
+  async function handleExportConfig() {
+    const response = await exportConfig();
+    if (!response.ok) {
+      setConfigMessage(response.error);
+      return;
+    }
+    downloadJson(response.data, configFileName(response.data.exportedAt));
+    setConfigMessage(`已导出 ${Object.keys(response.data.friends).length} 位佬朋友配置。`);
+  }
+
+  async function handleImportConfig(file: File | undefined) {
+    if (!file) return;
+    try {
+      const json = await file.text();
+      if (!window.confirm("确认导入配置？这会替换当前佬朋友和刷新设置，并清空本地缓存。")) return;
+      const response = await importConfig(json);
+      if (response.ok) {
+        setState(response.data);
+        setConfigMessage(response.data.lastSync?.message ?? "已导入配置。");
+      } else {
+        setConfigMessage(response.error);
+      }
+    } catch {
+      setConfigMessage("读取配置文件失败。");
+    } finally {
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
   }
 
   return (
@@ -125,6 +160,31 @@ export function OptionsApp() {
         </ul>
       </section>
 
+      <section className="panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>配置迁移</h2>
+            <p className="panel-subtitle">只导入导出佬朋友和刷新设置，不包含账号、动态、头像缓存、页面现场或 Cookie。</p>
+          </div>
+          <div className="maintenance-actions">
+            <button className="small-action" type="button" onClick={() => void handleExportConfig()}>
+              导出配置
+            </button>
+            <button className="small-action" type="button" onClick={() => importInputRef.current?.click()}>
+              导入配置
+            </button>
+            <input
+              ref={importInputRef}
+              className="visually-hidden-file"
+              type="file"
+              accept="application/json,.json"
+              onChange={(event) => void handleImportConfig(event.currentTarget.files?.[0])}
+            />
+          </div>
+        </div>
+        {configMessage ? <p className="settings-meta">{configMessage}</p> : null}
+      </section>
+
       <section className="panel danger-panel">
         <div className="panel-title-row">
           <div>
@@ -143,6 +203,22 @@ export function OptionsApp() {
       </section>
     </main>
   );
+}
+
+function downloadJson(data: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function configFileName(exportedAt: string) {
+  return `linuxdo-friends-config-${exportedAt.replace(/[:.]/g, "-")}.json`;
 }
 
 const rootElement = document.getElementById("root");

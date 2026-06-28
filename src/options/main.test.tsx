@@ -96,6 +96,42 @@ describe("OptionsApp update diagnostics", () => {
     expect(window.confirm).toHaveBeenCalled();
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "resetExtension" });
   });
+
+  it("exports config from the options page", async () => {
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:config");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const chromeMock = setupChrome();
+    const { container } = await renderOptionsApp();
+
+    await act(async () => {
+      getButton(container, "导出配置").click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "exportConfig" });
+    expect(createObjectURL).toHaveBeenCalled();
+    expect(click).toHaveBeenCalled();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:config");
+    expect(container.textContent).toContain("已导出 1 位佬朋友配置。");
+  });
+
+  it("imports config from the options page after confirmation", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const chromeMock = setupChrome();
+    const { container } = await renderOptionsApp();
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("import input not found");
+    const file = new File(["{}"], "config.json", { type: "application/json" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+
+    await act(async () => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "importConfig", json: "{}" });
+    expect(container.textContent).toContain("已导入 1 位佬朋友配置。");
+  });
 });
 
 async function renderOptionsApp() {
@@ -148,6 +184,46 @@ function setupChrome({
     if (message.type === "clearCache") return { ok: true, data: defaultAppState };
     if (message.type === "resetExtension") return { ok: true, data: defaultAppState };
     if (message.type === "updateSettings") return { ok: true, data: defaultAppState };
+    if (message.type === "exportConfig") {
+      return {
+        ok: true,
+        data: {
+          schemaVersion: 1,
+          source: "linuxdo-friends",
+          exportedAt: "2026-06-28T00:00:00.000Z",
+          friends: {
+            neo: {
+              username: "neo",
+              note: "",
+              groups: [],
+              pinned: false,
+              upgradedAt: "2026-06-28T00:00:00.000Z",
+              updatedAt: "2026-06-28T00:00:00.000Z"
+            }
+          },
+          settings: defaultAppState.settings
+        }
+      };
+    }
+    if (message.type === "importConfig") {
+      return {
+        ok: true,
+        data: {
+          ...defaultAppState,
+          friends: {
+            neo: {
+              username: "neo",
+              note: "",
+              groups: [],
+              pinned: false,
+              upgradedAt: "2026-06-28T00:00:00.000Z",
+              updatedAt: "2026-06-28T00:00:00.000Z"
+            }
+          },
+          lastSync: { ok: true, source: "manual", message: "已导入 1 位佬朋友配置。", refreshedAt: "2026-06-28T00:00:00.000Z" }
+        }
+      };
+    }
     return { ok: false, error: "unexpected command" };
   });
   vi.stubGlobal("chrome", {

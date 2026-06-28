@@ -13,9 +13,12 @@ export function isBackgroundCommand(value: unknown): value is BackgroundCommand 
     case "openSidePanel":
     case "openOptionsPage":
     case "openLinuxDoHome":
+    case "exportConfig":
     case "clearCache":
     case "resetExtension":
       return true;
+    case "importConfig":
+      return isNonEmptyString(command.json);
     case "checkForUpdates":
       return command.force === undefined || typeof command.force === "boolean";
     case "repairLinuxDoPageScript":

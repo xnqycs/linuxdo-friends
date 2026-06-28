@@ -175,6 +175,14 @@ export interface AppState {
   lastSync?: RefreshResult;
 }
 
+export interface ConfigExportFile {
+  schemaVersion: 1;
+  source: "linuxdo-friends";
+  exportedAt: string;
+  friends: Record<Username, FriendUser>;
+  settings: RefreshSettings;
+}
+
 export type PageScriptHeartbeatStatus = "ready" | "challenge" | "unavailable";
 
 export interface PageScriptHeartbeat {
@@ -266,6 +274,8 @@ export type BackgroundCommand =
   | { type: "openOptionsPage" }
   | { type: "openLinuxDoHome" }
   | { type: "updateSettings"; settings: Partial<RefreshSettings> }
+  | { type: "exportConfig" }
+  | { type: "importConfig"; json: string }
   | { type: "clearCache" }
   | { type: "resetExtension" };
 

@@ -699,6 +699,17 @@ input[type="checkbox"] {
   background: #551a28;
 }
 
+.visually-hidden-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  white-space: nowrap;
+}
+
 .list {
   display: grid;
   gap: 8px;

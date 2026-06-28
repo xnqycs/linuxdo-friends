@@ -37,6 +37,8 @@ describe("message contracts", () => {
     expect(isBackgroundCommand({ type: "openSidePanel" })).toBe(true);
     expect(isBackgroundCommand({ type: "openOptionsPage" })).toBe(true);
     expect(isBackgroundCommand({ type: "openLinuxDoHome" })).toBe(true);
+    expect(isBackgroundCommand({ type: "exportConfig" })).toBe(true);
+    expect(isBackgroundCommand({ type: "importConfig", json: "{}" })).toBe(true);
     expect(isBackgroundCommand({ type: "clearCache" })).toBe(true);
     expect(isBackgroundCommand({ type: "resetExtension" })).toBe(true);
   });
@@ -57,6 +59,7 @@ describe("message contracts", () => {
     expect(isBackgroundCommand({ type: "refreshFriendActivity", scope: { kind: "bad", usernames: ["ok"] } })).toBe(false);
     expect(isBackgroundCommand({ type: "seedFollowedUser", user: { name: "No username" } })).toBe(false);
     expect(isBackgroundCommand({ type: "updateSettings", settings: { refreshIntervalMinutes: 1 } })).toBe(false);
+    expect(isBackgroundCommand({ type: "importConfig", json: "" })).toBe(false);
   });
 
   it("keeps MVP-only refresh toggles disabled at the service-worker boundary", async () => {
@@ -158,8 +161,36 @@ describe("message contracts", () => {
     });
   });
 
+  it("falls back to the bundled GitHub API mirror when the primary API is rate-limited", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("rate limit", { status: 403 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ tag_name: "v1.1.0", html_url: "https://github.com/LeUKi/linuxdo-friends/releases/tag/v1.1.0" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const { send, localStorage } = await setupWorker();
+
+    const response = await send({ type: "checkForUpdates", force: true });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        installedVersion: "1.0.0",
+        latestVersion: "1.1.0",
+        status: "update-available"
+      }
+    });
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, "https://api.github.com/repos/LeUKi/linuxdo-friends/releases/latest", expect.any(Object));
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, "https://github-api.lafish.workers.dev/repos/LeUKi/linuxdo-friends/releases/latest", expect.any(Object));
+    expect(localStorage.dump()).toMatchObject({
+      linuxdoFriendsUpdateCheck: {
+        latestVersion: "1.1.0",
+        status: "update-available"
+      }
+    });
+  });
+
   it("records update-check failures as diagnostics instead of throwing", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("rate limit", { status: 403 })));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("bad gateway", { status: 502 })));
     const { send } = await setupWorker();
 
     const response = await send({ type: "checkForUpdates", force: true });
@@ -169,9 +200,10 @@ describe("message contracts", () => {
       data: {
         installedVersion: "1.0.0",
         status: "error",
-        error: "GitHub Release 检查失败：HTTP 403"
+        error: "GitHub Release 检查失败：HTTP 502"
       }
     });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("configures the browser action to open the side panel instead of a popup", async () => {
@@ -788,6 +820,147 @@ describe("message contracts", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("does not let an older refresh overwrite a later config import", async () => {
+    let resolveFetch: (response: Response) => void = () => undefined;
+    const pendingFetch = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(() => pendingFetch));
+    const oldState = addFriendFromProfile(defaultAppState, { username: "Old", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const importJson = JSON.stringify({
+      schemaVersion: 1,
+      source: "linuxdo-friends",
+      exportedAt: "2026-06-28T00:00:00.000Z",
+      friends: {
+        neo: {
+          username: "neo",
+          note: "",
+          groups: [],
+          pinned: false,
+          upgradedAt: "2026-06-28T00:00:00.000Z",
+          updatedAt: "2026-06-28T00:00:00.000Z"
+        }
+      },
+      settings: { refreshIntervalMinutes: 90 }
+    });
+    const { send, localStorage, sessionStorage } = await setupWorker({ initialState: oldState });
+
+    const refresh = send({ type: "refreshFriendProfiles" });
+    await Promise.resolve();
+    const imported = await send({ type: "importConfig", json: importJson });
+    resolveFetch(profileResponse("Old", "Old"));
+    const refreshResult = await refresh;
+
+    expect(imported).toMatchObject({ ok: true, data: { friends: { neo: { username: "neo" } } } });
+    expect(refreshResult).toMatchObject({
+      ok: true,
+      data: {
+        friends: { neo: { username: "neo" } },
+        lastSync: { ok: false, message: "已导入配置，较早的刷新结果已丢弃。" }
+      }
+    });
+    expect(localStorage.dump()).toMatchObject({
+      linuxdoFriendsState: {
+        friends: { neo: { username: "neo" } },
+        settings: { refreshIntervalMinutes: 90 }
+      }
+    });
+    expect((localStorage.dump().linuxdoFriendsState as typeof defaultAppState).friends.old).toBeUndefined();
+    expect(sessionStorage.dump()).not.toHaveProperty(SITE_DATA_PROGRESS_STORAGE_KEY);
+  });
+
+  it("clears live site-data progress and releases the refresh slot after config import", async () => {
+    let resolveFirstFetch: (response: Response) => void = () => undefined;
+    const firstFetch = new Promise<Response>((resolve) => {
+      resolveFirstFetch = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockReturnValueOnce(firstFetch).mockResolvedValue(profileResponse("Neo", "Neo")));
+    const oldState = addFriendFromProfile(defaultAppState, { username: "Old", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const importJson = JSON.stringify({
+      schemaVersion: 1,
+      source: "linuxdo-friends",
+      exportedAt: "2026-06-28T00:00:00.000Z",
+      friends: {
+        neo: {
+          username: "neo",
+          note: "",
+          groups: [],
+          pinned: false,
+          upgradedAt: "2026-06-28T00:00:00.000Z",
+          updatedAt: "2026-06-28T00:00:00.000Z"
+        }
+      },
+      settings: { refreshIntervalMinutes: 90 }
+    });
+    const { send } = await setupWorker({ initialState: oldState });
+
+    const staleRefresh = send({ type: "refreshFriendProfiles" });
+    await Promise.resolve();
+    await send({ type: "importConfig", json: importJson });
+    const progressAfterImport = await send({ type: "getSiteDataProgress" });
+    const newRefresh = await send({ type: "refreshFriendProfiles" });
+    resolveFirstFetch(profileResponse("Old", "Old"));
+    const staleResult = await staleRefresh;
+
+    expect(progressAfterImport).toEqual({ ok: true, data: null });
+    expect(newRefresh).toMatchObject({
+      ok: true,
+      data: {
+        friendProfiles: { neo: { username: "neo", name: "Neo" } },
+        lastSync: { ok: true, source: "direct_fetch" }
+      }
+    });
+    expect(staleResult).toMatchObject({
+      ok: true,
+      data: {
+        friends: { neo: { username: "neo" } },
+        lastSync: { ok: false, message: "已导入配置，较早的刷新结果已丢弃。" }
+      }
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let an older local settings update overwrite a later config import", async () => {
+    const oldState = addFriendFromProfile(defaultAppState, { username: "Old", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const importJson = JSON.stringify({
+      schemaVersion: 1,
+      source: "linuxdo-friends",
+      exportedAt: "2026-06-28T00:00:00.000Z",
+      friends: {
+        neo: {
+          username: "neo",
+          note: "",
+          groups: [],
+          pinned: false,
+          upgradedAt: "2026-06-28T00:00:00.000Z",
+          updatedAt: "2026-06-28T00:00:00.000Z"
+        }
+      },
+      settings: { refreshIntervalMinutes: 90 }
+    });
+    const { send, localStorage } = await setupWorker({ initialState: oldState });
+
+    const settingsUpdate = send({ type: "updateSettings", settings: { refreshIntervalMinutes: 60 } });
+    const imported = await send({ type: "importConfig", json: importJson });
+    const staleUpdate = await settingsUpdate;
+
+    expect(imported).toMatchObject({ ok: true, data: { friends: { neo: { username: "neo" } }, settings: { refreshIntervalMinutes: 90 } } });
+    expect(staleUpdate).toMatchObject({
+      ok: true,
+      data: {
+        friends: { neo: { username: "neo" } },
+        settings: { refreshIntervalMinutes: 90 },
+        lastSync: { ok: false, message: "已导入配置，较早的本地修改结果已丢弃。" }
+      }
+    });
+    expect(localStorage.dump()).toMatchObject({
+      linuxdoFriendsState: {
+        friends: { neo: { username: "neo" } },
+        settings: { refreshIntervalMinutes: 90 }
+      }
+    });
+  });
+
   it("preserves already-refreshed profiles when existing-tab fallback later fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("Enable JavaScript and cookies to continue", { status: 429 })));
     const state = addFriendFromProfile(
@@ -890,6 +1063,157 @@ describe("message contracts", () => {
       }
     });
     expect(sessionStorage.dump()).not.toHaveProperty(SITE_DATA_PROGRESS_STORAGE_KEY);
+  });
+
+  it("exports only friends and settings config", async () => {
+    const state = {
+      ...addFriendFromProfile(defaultAppState, { username: "Neil", name: "Neo", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      followedUsers: {
+        neil: {
+          username: "neil",
+          source: "sync",
+          followedAt: "2026-06-28T00:00:00.000Z",
+          updatedAt: "2026-06-28T00:00:00.000Z"
+        }
+      },
+      activity: { neil: { username: "neil", refreshedAt: "2026-06-28T00:00:00.000Z", items: [] } },
+      avatarCache: {
+        neil: {
+          username: "neil",
+          sourceUrl: "https://linux.do/avatar.png",
+          dataUrl: "data:image/png;base64,abc",
+          contentType: "image/png",
+          byteLength: 3,
+          updatedAt: "2026-06-28T00:00:00.000Z"
+        }
+      },
+      currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" as const },
+      settings: { ...defaultAppState.settings, refreshIntervalMinutes: 60 }
+    };
+    const { send } = await setupWorker({ initialState: state });
+
+    const response = await send({ type: "exportConfig" });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        schemaVersion: 1,
+        source: "linuxdo-friends",
+        friends: { neil: { username: "neil" } },
+        settings: { refreshIntervalMinutes: 60, allowAutoRefresh: false, allowInactiveTabFallback: false }
+      }
+    });
+    const payload = JSON.stringify((response as { ok: true; data: unknown }).data);
+    expect(payload).not.toContain("currentAccount");
+    expect(payload).not.toContain("followedUsers");
+    expect(payload).not.toContain("avatarCache");
+    expect(payload).not.toContain("activity");
+  });
+
+  it("imports config with overwrite semantics and clears non-migratable state", async () => {
+    const state = {
+      ...addFriendFromProfile(defaultAppState, { username: "Old", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      followedUsers: {
+        old: {
+          username: "old",
+          source: "sync",
+          followedAt: "2026-06-28T00:00:00.000Z",
+          updatedAt: "2026-06-28T00:00:00.000Z"
+        }
+      },
+      activity: { old: { username: "old", refreshedAt: "2026-06-28T00:00:00.000Z", items: [] } },
+      currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" as const }
+    };
+    const json = JSON.stringify({
+      schemaVersion: 1,
+      source: "linuxdo-friends",
+      exportedAt: "2026-06-28T00:00:00.000Z",
+      friends: {
+        neo: {
+          username: "neo",
+          note: "NAS",
+          groups: ["ops"],
+          pinned: true,
+          upgradedAt: "2026-06-28T00:00:00.000Z",
+          updatedAt: "2026-06-28T00:00:00.000Z"
+        }
+      },
+      settings: { refreshIntervalMinutes: 90 }
+    });
+    const { send, localStorage, sessionStorage } = await setupWorker({
+      initialState: state,
+      initialUpdateCheck: {
+        installedVersion: "1.0.0",
+        latestReleaseUrl: "https://github.com/LeUKi/linuxdo-friends/releases/latest",
+        status: "up-to-date",
+        latestVersion: "1.0.0",
+        checkedAt: "2026-06-28T00:00:00.000Z",
+        source: "github_release"
+      },
+      initialSession: {
+        [SITE_DATA_PROGRESS_STORAGE_KEY]: { taskId: "old" },
+        [PAGE_SCRIPT_STATUS_STORAGE_KEY]: { status: "connected" },
+        "linuxdoFriendsUiScene.tab": "feed"
+      }
+    });
+
+    const response = await send({ type: "importConfig", json });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        friends: { neo: { username: "neo", note: "NAS", groups: ["ops"], pinned: true } },
+        settings: { refreshIntervalMinutes: 90, allowAutoRefresh: false, allowInactiveTabFallback: false },
+        followedUsers: {},
+        friendProfiles: {},
+        activity: {},
+        avatarCache: {},
+        lastSync: { ok: true, message: "已导入 1 位佬朋友配置。" }
+      }
+    });
+    expect((response as { ok: true; data: typeof defaultAppState }).data.currentAccount).toBeUndefined();
+    expect((localStorage.dump().linuxdoFriendsState as typeof defaultAppState).friends.old).toBeUndefined();
+    expect(localStorage.dump()).not.toHaveProperty("linuxdoFriendsUpdateCheck");
+    expect(sessionStorage.dump()).not.toHaveProperty(SITE_DATA_PROGRESS_STORAGE_KEY);
+    expect(sessionStorage.dump()).not.toHaveProperty(PAGE_SCRIPT_STATUS_STORAGE_KEY);
+    expect(sessionStorage.dump()).not.toHaveProperty("linuxdoFriendsUiScene.tab");
+  });
+
+  it("does not change state when config import validation fails", async () => {
+    const state = addFriendFromProfile(defaultAppState, { username: "Old", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const { send, localStorage } = await setupWorker({ initialState: state });
+
+    const response = await send({ type: "importConfig", json: "{" });
+
+    expect(response).toMatchObject({ ok: false, error: "配置文件不是有效的 JSON。" });
+    expect(localStorage.dump()).toMatchObject({
+      linuxdoFriendsState: {
+        friends: { old: { username: "old" } }
+      }
+    });
+  });
+
+  it("does not change state when config import has invalid settings schema", async () => {
+    const state = addFriendFromProfile(defaultAppState, { username: "Old", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const { send, localStorage } = await setupWorker({ initialState: state });
+
+    const response = await send({
+      type: "importConfig",
+      json: JSON.stringify({
+        schemaVersion: 1,
+        source: "linuxdo-friends",
+        exportedAt: "2026-06-28T00:00:00.000Z",
+        friends: {},
+        settings: { refreshIntervalMinutes: "bad" }
+      })
+    });
+
+    expect(response).toMatchObject({ ok: false, error: "配置文件的刷新间隔不正确。" });
+    expect(localStorage.dump()).toMatchObject({
+      linuxdoFriendsState: {
+        friends: { old: { username: "old" } }
+      }
+    });
   });
 
   it("fully resets local extension data and session state", async () => {

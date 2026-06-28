@@ -53,7 +53,7 @@ describe("content script friend markers", () => {
     expect(pageStyle).toContain("height: 34%");
     expect(pageStyle).toContain("padding-inline: 1ch");
     expect(pageStyle).toContain("top: 56%");
-    expect(pageStyle).not.toMatch(/\n\s*color:\s/);
+    expect(pageStyle.match(/\.linuxdo-friends-name-mark \{[^}]+}/)?.[0]).not.toContain("color:");
   });
 
   it("removes stale markers when the friend set changes", async () => {
@@ -114,6 +114,252 @@ describe("content script friend markers", () => {
     expect(friendLink?.querySelector(".linuxdo-friends-name-mark")?.textContent).toBe("Neo");
     expect(friendLink?.querySelector("img")?.classList.contains("linuxdo-friends-friend-avatar")).toBe(true);
     vi.useRealTimers();
+  });
+
+  it("adds a profile page action button that can add the displayed user", async () => {
+    window.history.replaceState({}, "", "/u/misaka7369/summary");
+    document.body.innerHTML = `
+      <section class="user-main">
+        <div class="names"><h1>星</h1><span class="username">Misaka7369</span></div>
+        <img class="avatar" src="https://linux.do/user_avatar/linux.do/misaka7369/96/1.png" alt="">
+        <div class="controls">
+          <button class="btn btn-primary">私信</button>
+          <button class="btn">取消关注</button>
+          <button class="btn">添加用户标签</button>
+        </div>
+      </section>
+    `;
+    const addedState = addFriendFromProfile(defaultAppState, {
+      username: "misaka7369",
+      name: "星",
+      avatarUrl: "https://linux.do/user_avatar/linux.do/misaka7369/96/1.png",
+      refreshedAt: "2026-06-28T00:00:00.000Z"
+    });
+    const sendMessage = vi.fn(async (message: unknown) => {
+      if (isHeartbeatMessage(message)) return { ok: true };
+      if (isGetStateMessage(message)) return { ok: true, data: defaultAppState };
+      if (isAddFriendFromKnownUserMessage(message)) return { ok: true, data: addedState };
+      return { ok: true, data: defaultAppState };
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+        onMessage: {
+          addListener: vi.fn()
+        }
+      },
+      storage: {
+        local: createMockLocalStorage(),
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+
+    await import("./contentScript");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const button = document.getElementById("linuxdo-friends-profile-action") as HTMLButtonElement | null;
+    expect(button?.textContent).toBe("视奸");
+    expect(button?.dataset.linuxdoFriendsActive).toBe("false");
+    expect(Array.from(document.querySelectorAll(".controls > button")).map((item) => item.textContent)).toEqual([
+      "私信",
+      "取消关注",
+      "视奸",
+      "添加用户标签"
+    ]);
+
+    button?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: "addFriendFromKnownUser",
+      user: {
+        username: "misaka7369",
+        name: "星",
+        avatarUrl: "https://linux.do/user_avatar/linux.do/misaka7369/96/1.png"
+      }
+    });
+    expect(button?.textContent).toBe("取消视奸");
+    expect(button?.dataset.linuxdoFriendsActive).toBe("true");
+  });
+
+  it("lets a profile page action remove an existing friend", async () => {
+    const state = addFriendFromProfile(defaultAppState, {
+      username: "misaka7369",
+      name: "星",
+      refreshedAt: "2026-06-28T00:00:00.000Z"
+    });
+    window.history.replaceState({}, "", "/u/misaka7369");
+    document.body.innerHTML = `
+      <section class="user-main">
+        <div class="names"><h1>星</h1><span class="username">Misaka7369</span></div>
+        <div class="controls">
+          <button class="btn">取消关注</button>
+        </div>
+      </section>
+    `;
+    const sendMessage = vi.fn(async (message: unknown) => {
+      if (isHeartbeatMessage(message)) return { ok: true };
+      if (isGetStateMessage(message)) return { ok: true, data: state };
+      if (isRemoveFriendMessage(message)) return { ok: true, data: defaultAppState };
+      return { ok: true, data: state };
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+        onMessage: {
+          addListener: vi.fn()
+        }
+      },
+      storage: {
+        local: createMockLocalStorage(),
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+
+    await import("./contentScript");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const button = document.getElementById("linuxdo-friends-profile-action") as HTMLButtonElement | null;
+    expect(button?.textContent).toBe("取消视奸");
+    expect(button?.dataset.linuxdoFriendsActive).toBe("true");
+
+    button?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessage).toHaveBeenCalledWith({ type: "removeFriend", username: "misaka7369" });
+    expect(button?.textContent).toBe("视奸");
+    expect(button?.dataset.linuxdoFriendsActive).toBe("false");
+  });
+
+  it("adds a friend action to a user card popover", async () => {
+    window.history.replaceState({}, "", "/t/topic/1");
+    document.body.innerHTML = `
+      <aside class="user-card">
+        <a class="user-card-avatar" href="/u/misaka7369">
+          <img class="avatar" src="https://linux.do/user_avatar/linux.do/misaka7369/96/1.png" alt="">
+        </a>
+        <div class="names"><a class="name" href="/u/misaka7369">星</a><a class="username" href="/u/misaka7369">@Misaka7369</a></div>
+        <ul class="usercard-controls">
+          <li><button class="btn btn-primary">私信</button></li>
+          <li class="follow-button-container"><div class="ember-view"><button class="btn">关注</button></div></li>
+        </ul>
+      </aside>
+    `;
+    const addedState = addFriendFromProfile(defaultAppState, {
+      username: "misaka7369",
+      name: "星",
+      avatarUrl: "https://linux.do/user_avatar/linux.do/misaka7369/96/1.png",
+      refreshedAt: "2026-06-28T00:00:00.000Z"
+    });
+    const sendMessage = vi.fn(async (message: unknown) => {
+      if (isHeartbeatMessage(message)) return { ok: true };
+      if (isGetStateMessage(message)) return { ok: true, data: defaultAppState };
+      if (isAddFriendFromKnownUserMessage(message)) return { ok: true, data: addedState };
+      return { ok: true, data: defaultAppState };
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+        onMessage: {
+          addListener: vi.fn()
+        }
+      },
+      storage: {
+        local: createMockLocalStorage(),
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+
+    await import("./contentScript");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const button = document.querySelector<HTMLButtonElement>('.user-card .linuxdo-friends-profile-action');
+    expect(button?.id).toBe("");
+    expect(button?.textContent).toBe("视奸");
+    expect(button?.dataset.username).toBe("misaka7369");
+    expect(button?.closest("li")?.className).toBe("linuxdo-friends-action-wrapper");
+    expect(Array.from(document.querySelectorAll(".user-card .usercard-controls > li")).map((item) => item.textContent?.trim())).toEqual([
+      "私信",
+      "关注",
+      "视奸"
+    ]);
+
+    button?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: "addFriendFromKnownUser",
+      user: {
+        username: "misaka7369",
+        name: "星",
+        avatarUrl: "https://linux.do/user_avatar/linux.do/misaka7369/96/1.png"
+      }
+    });
+    expect(button?.textContent).toBe("取消视奸");
+  });
+
+  it("lets a user card friend action remove an existing friend", async () => {
+    const state = addFriendFromProfile(defaultAppState, {
+      username: "misaka7369",
+      name: "星",
+      refreshedAt: "2026-06-28T00:00:00.000Z"
+    });
+    window.history.replaceState({}, "", "/t/topic/1");
+    document.body.innerHTML = `
+      <aside class="user-card" data-username="Misaka7369">
+        <div class="names"><span class="name">星</span><span class="username">@Misaka7369</span></div>
+        <ul class="usercard-controls">
+          <li><button class="btn">关注</button></li>
+        </ul>
+      </aside>
+    `;
+    const sendMessage = vi.fn(async (message: unknown) => {
+      if (isHeartbeatMessage(message)) return { ok: true };
+      if (isGetStateMessage(message)) return { ok: true, data: state };
+      if (isRemoveFriendMessage(message)) return { ok: true, data: defaultAppState };
+      return { ok: true, data: state };
+    });
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage,
+        onMessage: {
+          addListener: vi.fn()
+        }
+      },
+      storage: {
+        local: createMockLocalStorage(),
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+
+    await import("./contentScript");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const button = document.querySelector<HTMLButtonElement>('.user-card .linuxdo-friends-profile-action');
+    expect(button?.textContent).toBe("取消视奸");
+    expect(button?.dataset.linuxdoFriendsActive).toBe("true");
+
+    button?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendMessage).toHaveBeenCalledWith({ type: "removeFriend", username: "misaka7369" });
+    expect(button?.textContent).toBe("视奸");
   });
 
   it("injects a page launcher before the current-user header item and opens the native user menu friends tab", async () => {
@@ -1029,4 +1275,16 @@ function isHeartbeatMessage(value: unknown): boolean {
 
 function isGetPageScriptStatusMessage(value: unknown): boolean {
   return typeof value === "object" && value != null && (value as { type?: unknown }).type === "getPageScriptStatus";
+}
+
+function isGetStateMessage(value: unknown): boolean {
+  return typeof value === "object" && value != null && (value as { type?: unknown }).type === "getState";
+}
+
+function isAddFriendFromKnownUserMessage(value: unknown): boolean {
+  return typeof value === "object" && value != null && (value as { type?: unknown }).type === "addFriendFromKnownUser";
+}
+
+function isRemoveFriendMessage(value: unknown): boolean {
+  return typeof value === "object" && value != null && (value as { type?: unknown }).type === "removeFriend";
 }

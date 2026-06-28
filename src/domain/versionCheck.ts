@@ -2,6 +2,7 @@ import { nowIso } from "../shared/time";
 import type { UpdateCheckState } from "../shared/types";
 
 export const GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/LeUKi/linuxdo-friends/releases/latest";
+export const GITHUB_LATEST_RELEASE_API_MIRROR = "https://github-api.lafish.workers.dev/repos/LeUKi/linuxdo-friends/releases/latest";
 export const GITHUB_LATEST_RELEASE_URL = "https://github.com/LeUKi/linuxdo-friends/releases/latest";
 export const UPDATE_CHECK_TTL_MS = 12 * 60 * 60 * 1000;
 

@@ -10,10 +10,12 @@ import {
   type ActivityRequestStep
 } from "../domain/activityRefresh";
 import { defaultAppState } from "../domain/defaultState";
+import { applyConfigImport, createConfigExport, parseConfigImportJson } from "../domain/configTransfer";
 import { addFriendFromKnownUser, addFriendFromProfile, removeFriend, updateFriend, upsertFollowedUser, upsertFriendProfile } from "../domain/friends";
 import {
   defaultUpdateCheckState,
   GITHUB_LATEST_RELEASE_API,
+  GITHUB_LATEST_RELEASE_API_MIRROR,
   isUpdateCheckCacheFresh,
   updateCheckFailureState,
   updateCheckStateFromRelease
@@ -46,13 +48,14 @@ import type {
 } from "../shared/types";
 import { PAGE_SCRIPT_STATUS_STORAGE_KEY, savePageScriptStatusState } from "../storage/pageScriptStatusStorage";
 import { SITE_DATA_PROGRESS_STORAGE_KEY, saveSiteDataProgressState } from "../storage/siteDataProgressStorage";
-import { loadState, saveState, updateState } from "../storage/storage";
+import { loadState, saveState } from "../storage/storage";
 import { UPDATE_CHECK_STORAGE_KEY, loadUpdateCheckState, saveUpdateCheckState } from "../storage/updateCheckStorage";
 import { allUiSceneStorageKeys } from "../storage/uiSceneStorage";
 
 const refreshAdapter = createRefreshAdapter();
 interface ActiveSiteDataTask {
   taskId: string;
+  generation: number;
   promise: Promise<BackgroundResponse>;
   progress?: SiteDataTaskProgress;
 }
@@ -60,6 +63,7 @@ interface ActiveSiteDataTask {
 let activeSiteDataTask: ActiveSiteDataTask | null = null;
 let activeUpdateCheck: Promise<UpdateCheckState> | null = null;
 let lastSiteDataProgress: SiteDataTaskProgress | null = null;
+let stateWriteGeneration = 0;
 const pageScriptHeartbeats = new Map<number, PageScriptHeartbeat>();
 const heartbeatFreshMs = 45_000;
 const heartbeatStaleMs = 120_000;
@@ -111,17 +115,17 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
     case "identifyCurrentAccount":
       return ok(await identifyCurrentAccount());
     case "seedFollowedUser":
-      return ok(await updateState((state) => upsertFollowedUser(state, { ...command.user, source: "manual" })));
+      return ok(await updateAppState((state) => upsertFollowedUser(state, { ...command.user, source: "manual" })));
     case "lookupFriendProfile":
       return lookupFriendProfileWithFallback(command.username);
     case "addFriendFromKnownUser":
-      return ok(await updateState((state) => addFriendFromKnownUser(state, command.user, command.profile)));
+      return ok(await updateAppState((state) => addFriendFromKnownUser(state, command.user, command.profile)));
     case "addFriendByProfile":
       return runSiteDataTask(() => refreshState((state) => addFriendByProfileWithFallback(state, command.username)));
     case "removeFriend":
-      return ok(await updateState((state) => removeFriend(state, command.username)));
+      return ok(await updateAppState((state) => removeFriend(state, command.username)));
     case "updateFriend":
-      return ok(await updateState((state) => updateFriend(state, command.username, command.patch)));
+      return ok(await updateAppState((state) => updateFriend(state, command.username, command.patch)));
     case "syncFollowedUsers":
       return runSiteDataTask(() => refreshState(syncFollowedUsersWithFallback));
     case "refreshFriendProfiles":
@@ -133,7 +137,7 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
     case "cacheAvatars":
       return ok(await cacheAvatarsFromExistingTab(command.usernames));
     case "getSiteDataProgress":
-      return ok(activeSiteDataTask?.progress ?? lastSiteDataProgress);
+      return ok(currentSiteDataProgress());
     case "getPageScriptStatus":
       return ok(pageScriptStatusSnapshot());
     case "getUpdateCheck":
@@ -150,7 +154,7 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
       return ok(await openLinuxDoHome());
     case "updateSettings":
       return ok(
-        await updateState((state) => ({
+        await updateAppState((state) => ({
           ...state,
           settings: {
             ...state.settings,
@@ -158,6 +162,10 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
           }
         }))
       );
+    case "exportConfig":
+      return ok(createConfigExport(await loadState()));
+    case "importConfig":
+      return ok(await importConfig(command.json));
     case "clearCache":
       return ok(await clearCache());
     case "resetExtension":
@@ -165,13 +173,30 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
   }
 }
 
+async function importConfig(json: string): Promise<AppState> {
+  const file = parseConfigImportJson(json);
+  invalidateStateWriters();
+  clearActiveSiteDataTask();
+  const { state: next } = applyConfigImport(file);
+  await saveState(next);
+  await removeLocalStorageKeys([UPDATE_CHECK_STORAGE_KEY]);
+  await removeSessionStorageKeys([SITE_DATA_PROGRESS_STORAGE_KEY, PAGE_SCRIPT_STATUS_STORAGE_KEY, ...allUiSceneStorageKeys]);
+  pageScriptHeartbeats.clear();
+  lastSiteDataProgress = null;
+  return next;
+}
+
 async function identifyCurrentAccount(): Promise<AppState> {
+  const generation = stateWriteGeneration;
   const current = await loadState();
   const result = (await identifyCurrentAccountFromExistingTab(current)) ?? (await refreshAdapter.identifyCurrentAccount(current));
   const next = {
     ...result.state,
     lastSync: result.result
   };
+  if (generation !== stateWriteGeneration) {
+    return staleStateWriteResponse("已导入配置，较早的账号识别结果已丢弃。");
+  }
   await saveState(next);
   return next;
 }
@@ -206,7 +231,7 @@ async function identifyCurrentAccountFromExistingTab(state: AppState): Promise<{
 }
 
 async function clearCache(): Promise<AppState> {
-  const next = await updateState((state) => ({
+  const next = await updateAppState((state) => ({
     ...state,
     followedUsers: {},
     friendProfiles: {},
@@ -228,6 +253,8 @@ async function clearCache(): Promise<AppState> {
 }
 
 async function resetExtension(): Promise<AppState> {
+  invalidateStateWriters();
+  clearActiveSiteDataTask();
   const next: AppState = {
     ...defaultAppState,
     lastSync: {
@@ -267,33 +294,63 @@ async function checkForUpdates(force: boolean): Promise<UpdateCheckState> {
   if (!force && cached.checkedAt && isUpdateCheckCacheFresh(cached)) return cached;
   if (activeUpdateCheck) return activeUpdateCheck;
 
-  const request = fetchLatestReleaseUpdateState(installed).finally(() => {
+  const request = fetchLatestReleaseUpdateState(installed, stateWriteGeneration).finally(() => {
     if (activeUpdateCheck === request) activeUpdateCheck = null;
   });
   activeUpdateCheck = request;
   return request;
 }
 
-async function fetchLatestReleaseUpdateState(installed: string): Promise<UpdateCheckState> {
-  let next: UpdateCheckState;
+async function fetchLatestReleaseUpdateState(installed: string, generation: number): Promise<UpdateCheckState> {
+  const next = await fetchLatestReleaseFromApis(installed);
+  if (generation === stateWriteGeneration) {
+    await saveUpdateCheckState(next);
+  }
+  return next;
+}
+
+async function fetchLatestReleaseFromApis(installed: string): Promise<UpdateCheckState> {
+  const primary = await fetchLatestReleaseFromApi(GITHUB_LATEST_RELEASE_API);
+  if (primary.ok) return updateCheckStateFromRelease(installed, primary.payload);
+  if (primary.status === 404) return updateCheckFailureState(installed, "no-release", "GitHub 仓库还没有 latest release。");
+  if (!shouldTryGitHubApiMirror(primary)) {
+    return updateCheckFailureState(installed, "error", updateCheckFailureMessage(primary, "GitHub Release 检查失败。"));
+  }
+
+  const mirror = await fetchLatestReleaseFromApi(GITHUB_LATEST_RELEASE_API_MIRROR);
+  if (mirror.ok) return updateCheckStateFromRelease(installed, mirror.payload);
+  if (mirror.status === 404) return updateCheckFailureState(installed, "no-release", "GitHub 仓库还没有 latest release。");
+  return updateCheckFailureState(installed, "error", updateCheckFailureMessage(mirror, updateCheckFailureMessage(primary, "GitHub Release 检查失败。")));
+}
+
+type LatestReleaseFetchResult =
+  | { ok: true; payload: Record<string, unknown> }
+  | { ok: false; status?: number; error?: string };
+
+async function fetchLatestReleaseFromApi(url: string): Promise<LatestReleaseFetchResult> {
   try {
-    const response = await fetch(GITHUB_LATEST_RELEASE_API, {
+    const response = await fetch(url, {
       headers: {
         Accept: "application/vnd.github+json"
       }
     });
-    if (response.status === 404) {
-      next = updateCheckFailureState(installed, "no-release", "GitHub 仓库还没有 latest release。");
-    } else if (!response.ok) {
-      next = updateCheckFailureState(installed, "error", `GitHub Release 检查失败：HTTP ${response.status}`);
-    } else {
-      next = updateCheckStateFromRelease(installed, (await response.json()) as Record<string, unknown>);
-    }
+    if (!response.ok) return { ok: false, status: response.status };
+    return { ok: true, payload: (await response.json()) as Record<string, unknown> };
   } catch (error) {
-    next = updateCheckFailureState(installed, "error", error instanceof Error ? error.message : "GitHub Release 检查失败。");
+    return { ok: false, error: error instanceof Error ? error.message : "GitHub Release 检查失败。" };
   }
-  await saveUpdateCheckState(next);
-  return next;
+}
+
+function shouldTryGitHubApiMirror(result: LatestReleaseFetchResult): boolean {
+  if (result.ok) return false;
+  if (result.error) return true;
+  return result.status === 403 || result.status === 429 || (typeof result.status === "number" && result.status >= 500);
+}
+
+function updateCheckFailureMessage(result: LatestReleaseFetchResult, fallback: string): string {
+  if (result.ok) return fallback;
+  if (result.status) return `GitHub Release 检查失败：HTTP ${result.status}`;
+  return result.error ?? fallback;
 }
 
 function installedVersion(): string {
@@ -397,6 +454,7 @@ async function runSiteDataTask(run: () => Promise<BackgroundResponse>): Promise<
   const taskId = `site-data:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   const taskRecord: ActiveSiteDataTask = {
     taskId,
+    generation: stateWriteGeneration,
     promise: Promise.resolve({ ok: false, error: "任务尚未开始。" } satisfies BackgroundResponse)
   };
   activeSiteDataTask = taskRecord;
@@ -652,12 +710,20 @@ function setActivityProgress(progress: ActivityRefreshTaskProgress) {
 }
 
 function setSiteDataProgress(progress: SiteDataTaskProgress) {
-  if (activeSiteDataTask) {
-    activeSiteDataTask.progress = progress;
-  }
+  if (!activeSiteDataTask || activeSiteDataTask.generation !== stateWriteGeneration) return;
+  activeSiteDataTask.progress = progress;
   lastSiteDataProgress = progress;
   void saveSiteDataProgressState(progress);
   broadcastSiteDataProgress(progress);
+}
+
+function currentSiteDataProgress(): SiteDataTaskProgress | null {
+  if (activeSiteDataTask?.generation === stateWriteGeneration) return activeSiteDataTask.progress ?? lastSiteDataProgress;
+  return lastSiteDataProgress;
+}
+
+function clearActiveSiteDataTask() {
+  activeSiteDataTask = null;
 }
 
 function broadcastSiteDataProgress(progress: SiteDataTaskProgress) {
@@ -781,6 +847,7 @@ async function linuxDoTabCandidateIds(): Promise<number[]> {
 }
 
 async function cacheAvatarsFromExistingTab(usernames?: Username[]): Promise<AppState> {
+  const generation = stateWriteGeneration;
   const state = await loadState();
   const targets = avatarCacheTargets(state, usernames);
   if (targets.length === 0) return state;
@@ -803,7 +870,12 @@ async function cacheAvatarsFromExistingTab(usernames?: Username[]): Promise<AppS
       }
     };
   }
-  if (nextState !== state) await saveState(nextState);
+  if (nextState !== state) {
+    if (generation !== stateWriteGeneration) {
+      return staleStateWriteResponse("已导入配置，较早的头像缓存结果已丢弃。");
+    }
+    await saveState(nextState);
+  }
   return nextState;
 }
 
@@ -1066,11 +1138,45 @@ function applyMvpSettingsGuard(settings: Partial<AppState["settings"]>): Partial
 async function refreshState(
   run: (state: AppState) => Promise<{ state: AppState; result: AppState["lastSync"] }>
 ): Promise<BackgroundResponse> {
+  const generation = stateWriteGeneration;
   const current = await loadState();
   const { state, result } = await run(current);
   const next = { ...state, lastSync: result };
+  if (generation !== stateWriteGeneration) {
+    return ok(await staleStateWriteResponse("已导入配置，较早的刷新结果已丢弃。"));
+  }
   await saveState(next);
   return ok(next);
+}
+
+async function updateAppState(updater: (state: AppState) => AppState | Promise<AppState>): Promise<AppState> {
+  const generation = invalidateStateWriters();
+  const current = await loadState();
+  const next = await updater(current);
+  if (generation !== stateWriteGeneration) {
+    return staleStateWriteResponse("已导入配置，较早的本地修改结果已丢弃。");
+  }
+  await saveState(next);
+  return next;
+}
+
+function invalidateStateWriters(): number {
+  stateWriteGeneration += 1;
+  return stateWriteGeneration;
+}
+
+async function staleStateWriteResponse(message: string): Promise<AppState> {
+  const current = await loadState();
+  return {
+    ...current,
+    lastSync: {
+      ok: false,
+      source: "manual",
+      reason: "unavailable",
+      message,
+      refreshedAt: nowIso()
+    }
+  };
 }
 
 function ok<T>(data: T): BackgroundResponse<T> {

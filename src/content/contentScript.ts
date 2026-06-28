@@ -27,6 +27,10 @@ const friendAvatarClass = "linuxdo-friends-friend-avatar";
 const friendNameMarkClass = "linuxdo-friends-name-mark";
 const launcherId = "linuxdo-friends-launcher";
 const pageStyleId = "linuxdo-friends-page-style";
+const profileActionButtonId = "linuxdo-friends-profile-action";
+const profileActionButtonClass = "linuxdo-friends-profile-action";
+const friendActionWrapperClass = "linuxdo-friends-action-wrapper";
+const friendActionSurfaceAttr = "data-linuxdo-friends-surface";
 const userMenuTabId = "linuxdo-friends-user-menu-tab";
 const userMenuPanelId = "linuxdo-friends-user-menu-panel";
 const userMenuActiveClass = "linuxdo-friends-user-menu-active";
@@ -40,7 +44,9 @@ let userMenuObserver: MutationObserver | null = null;
 let userMenuEnhanceTimer: number | null = null;
 let launcherPlacementTimer: number | null = null;
 let friendMarkerTimer: number | null = null;
+let friendActionsTimer: number | null = null;
 let suppressFriendMarkerMutations = false;
+let suppressFriendActionMutations = false;
 let heartbeatTimer: number | null = null;
 let lastHeartbeatStatus: "pending" | "connected" | "disconnected" = "pending";
 let latestState: AppState | null = null;
@@ -59,6 +65,7 @@ async function init() {
   if (!state) return;
   latestState = state;
   markFriends(state);
+  enhanceFriendActions(state);
 }
 
 async function getState(): Promise<AppState | null> {
@@ -191,6 +198,62 @@ function ensurePageStyle() {
       }
     }
 
+    .${profileActionButtonClass} {
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 0.45em !important;
+      color: #071312 !important;
+      border: 1px solid color-mix(in srgb, var(--linuxdo-friends-accent) 72%, transparent) !important;
+      background:
+        linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--linuxdo-friends-accent) 96%, white 4%),
+          color-mix(in srgb, var(--linuxdo-friends-accent) 72%, black 18%)
+        ) !important;
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, white 26%, transparent),
+        0 0 18px color-mix(in srgb, var(--linuxdo-friends-accent) 26%, transparent) !important;
+    }
+
+    .${profileActionButtonClass}:hover,
+    .${profileActionButtonClass}:focus-visible {
+      color: #04100f !important;
+      border-color: color-mix(in srgb, var(--linuxdo-friends-accent) 88%, transparent) !important;
+      background:
+        linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--linuxdo-friends-accent) 100%, white 0%),
+          color-mix(in srgb, var(--linuxdo-friends-accent) 82%, black 12%)
+        ) !important;
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
+        0 0 24px color-mix(in srgb, var(--linuxdo-friends-accent) 36%, transparent) !important;
+    }
+
+    .${profileActionButtonClass}[data-linuxdo-friends-active="true"] {
+      color: var(--linuxdo-friends-accent) !important;
+      background:
+        linear-gradient(
+          180deg,
+          color-mix(in srgb, #1f2726 88%, var(--linuxdo-friends-accent) 12%),
+          #1d2322
+        ) !important;
+      border-color: color-mix(in srgb, var(--linuxdo-friends-accent) 48%, transparent) !important;
+      box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / 0.06),
+        0 0 16px color-mix(in srgb, var(--linuxdo-friends-accent) 18%, transparent) !important;
+    }
+
+    .${profileActionButtonClass}[disabled] {
+      cursor: wait !important;
+      opacity: 0.72 !important;
+    }
+
+    .${friendActionWrapperClass} {
+      list-style: none !important;
+    }
+
     #${userMenuPanelId} {
       display: block;
       flex: 0 0 min(320px, calc(100vw - 64px));
@@ -234,13 +297,17 @@ function startUserMenuIntegration() {
     scheduleUserMenuEnhancement();
     scheduleLauncherPlacement();
     if (!suppressFriendMarkerMutations) scheduleFriendMarkers();
+    if (!suppressFriendActionMutations) scheduleFriendActions();
   });
   userMenuObserver.observe(document.body, { childList: true, subtree: true });
   window.addEventListener("load", () => scheduleLauncherPlacement(), { once: true });
 }
 
 function startRouteTracking() {
-  window.addEventListener("popstate", () => scheduleFriendMarkers());
+  window.addEventListener("popstate", () => {
+    scheduleFriendMarkers();
+    scheduleFriendActions();
+  });
   wrapHistoryMethod("pushState");
   wrapHistoryMethod("replaceState");
 }
@@ -250,6 +317,7 @@ function wrapHistoryMethod(method: "pushState" | "replaceState") {
   window.history[method] = function patchedHistoryMethod(this: History, ...args: Parameters<History[typeof method]>) {
     const result = original.apply(this, args);
     scheduleFriendMarkers();
+    scheduleFriendActions();
     return result;
   } as History[typeof method];
 }
@@ -260,6 +328,15 @@ function scheduleFriendMarkers() {
   friendMarkerTimer = window.setTimeout(() => {
     friendMarkerTimer = null;
     if (latestState) markFriends(latestState);
+  }, 80);
+}
+
+function scheduleFriendActions() {
+  if (typeof window === "undefined" || !latestState) return;
+  if (friendActionsTimer != null) return;
+  friendActionsTimer = window.setTimeout(() => {
+    friendActionsTimer = null;
+    if (latestState) enhanceFriendActions(latestState);
   }, 80);
 }
 
@@ -445,6 +522,340 @@ function isSlideInUserMenu(menu: HTMLElement) {
   return style.position === "fixed" && rect.height >= window.innerHeight - 2 && rect.width <= 360;
 }
 
+function enhanceFriendActions(state: AppState) {
+  ensurePageStyle();
+  suppressFriendActionMutations = true;
+  try {
+    const activeSurfaces = new Set<string>();
+    const profileTarget = profileFriendActionTarget();
+    if (profileTarget) {
+      activeSurfaces.add(profileTarget.surface);
+      const button = ensureFriendActionButton(profileTarget.surface);
+      updateFriendActionButton(button, state, profileTarget);
+      placeFriendActionButton(button, profileTarget);
+    }
+    for (const target of userCardFriendActionTargets()) {
+      activeSurfaces.add(target.surface);
+      const button = ensureFriendActionButton(target.surface);
+      updateFriendActionButton(button, state, target);
+      placeFriendActionButton(button, target);
+    }
+    document.querySelectorAll<HTMLButtonElement>(`.${profileActionButtonClass}`).forEach((button) => {
+      if (!button.dataset.linuxdoFriendsSurface || activeSurfaces.has(button.dataset.linuxdoFriendsSurface)) return;
+      removeFriendActionButton(button);
+    });
+  } finally {
+    window.setTimeout(() => {
+      suppressFriendActionMutations = false;
+    }, 0);
+  }
+}
+
+interface FriendActionTarget {
+  surface: string;
+  username: Username;
+  container: HTMLElement;
+  anchor?: HTMLElement;
+  name?: string;
+  avatarUrl?: string;
+  wrapWithListItem?: boolean;
+}
+
+function profileFriendActionTarget(): FriendActionTarget | null {
+  const username = currentProfileUsername();
+  const container = username ? findProfileActionContainer() : null;
+  if (!username || !container) return null;
+  return {
+    surface: "profile",
+    username,
+    container,
+    anchor: findProfileFollowButton() ?? undefined,
+    name: profilePageDisplayName(username),
+    avatarUrl: profilePageAvatarUrl()
+  };
+}
+
+function currentProfileUsername(): Username | null {
+  const parts = location.pathname.split("/").filter(Boolean);
+  if (parts.length < 2 || parts[0] !== "u") return null;
+  if (parts.length > 2 && parts[2] !== "summary") return null;
+  return normalizeUsername(decodeURIComponent(parts[1] ?? ""));
+}
+
+function findProfileActionContainer(): HTMLElement | null {
+  return findProfileFollowButton()?.parentElement ?? findProfileActionButtons().at(0)?.parentElement ?? null;
+}
+
+function findProfileFollowButton(): HTMLElement | null {
+  return findProfileActionButtons().find((button) => {
+    const text = button.textContent?.replace(/\s+/g, "") ?? "";
+    return text.includes("关注") || text.includes("Follow") || text.includes("Unfollow");
+  }) ?? null;
+}
+
+function findProfileActionButtons(): HTMLElement[] {
+  const selectors = [
+    ".user-main .controls button",
+    ".user-main .controls .btn",
+    ".user-profile .controls button",
+    ".user-profile .controls .btn",
+    ".user-main .user-profile-buttons button",
+    ".user-main .user-profile-buttons .btn",
+    ".user-main .user-profile-controls button",
+    ".user-main .user-profile-controls .btn",
+    ".user-profile .user-profile-buttons button",
+    ".user-profile .user-profile-buttons .btn",
+    ".user-profile .user-profile-controls button",
+    ".user-profile .user-profile-controls .btn",
+    ".user-profile-controls button",
+    ".user-profile-controls .btn",
+    ".user-content .controls button",
+    ".user-content .controls .btn"
+  ];
+  return Array.from(document.querySelectorAll<HTMLElement>(selectors.join(","))).filter((button) => button.id !== profileActionButtonId);
+}
+
+function userCardFriendActionTargets(): FriendActionTarget[] {
+  return findUserCards().flatMap((card, index) => {
+    const username = userCardUsername(card);
+    const container = username ? findUserCardActionContainer(card) : null;
+    if (!username || !container) return [];
+    return [
+      {
+        surface: `card:${index}:${username}`,
+        username,
+        container,
+        anchor: findUserCardFollowButton(card) ?? findUserCardActionButtons(card).at(-1),
+        name: userCardDisplayName(card, username),
+        avatarUrl: userCardAvatarUrl(card),
+        wrapWithListItem: container.matches("ul, ol")
+      }
+    ];
+  });
+}
+
+function findUserCards(): HTMLElement[] {
+  const selectors = [
+    ".user-card",
+    ".user-card.show",
+    ".user-card-container .user-card",
+    ".user-card-content",
+    "#user-card",
+    ".card-content"
+  ];
+  const cards = Array.from(document.querySelectorAll<HTMLElement>(selectors.join(",")));
+  return cards.filter((card, index) => cards.findIndex((candidate) => candidate === card || candidate.contains(card)) === index);
+}
+
+function userCardUsername(card: HTMLElement): Username | null {
+  const direct = card.dataset.userCardUsername ?? card.dataset.username ?? card.getAttribute("data-user-card") ?? "";
+  if (direct.trim()) return normalizeUsername(direct);
+  const link = card.querySelector<HTMLAnchorElement>('a[href^="/u/"], a[href*="linux.do/u/"]');
+  return link ? extractUsername(link) ?? null : null;
+}
+
+function findUserCardActionContainer(card: HTMLElement): HTMLElement | null {
+  const followButton = findUserCardFollowButton(card);
+  if (followButton) return userCardButtonListContainer(followButton) ?? followButton.parentElement;
+  const firstButton = findUserCardActionButtons(card).at(0);
+  return firstButton ? userCardButtonListContainer(firstButton) ?? firstButton.parentElement : null;
+}
+
+function userCardButtonListContainer(button: HTMLElement): HTMLElement | null {
+  const listItem = button.closest("li");
+  const list = listItem?.parentElement;
+  return list?.matches("ul, ol") ? list : null;
+}
+
+function findUserCardFollowButton(card: HTMLElement): HTMLElement | null {
+  return findUserCardActionButtons(card).find((button) => {
+    const text = button.textContent?.replace(/\s+/g, "") ?? "";
+    return text.includes("关注") || text.includes("Follow") || text.includes("Unfollow");
+  }) ?? null;
+}
+
+function findUserCardActionButtons(card: HTMLElement): HTMLElement[] {
+  const selectors = [
+    ".controls button",
+    ".controls .btn",
+    ".usercard-controls button",
+    ".usercard-controls .btn",
+    ".user-card-controls button",
+    ".user-card-controls .btn",
+    ".card-controls button",
+    ".card-controls .btn",
+    ".buttons button",
+    ".buttons .btn"
+  ];
+  return Array.from(card.querySelectorAll<HTMLElement>(selectors.join(","))).filter((button) => !button.classList.contains(profileActionButtonClass));
+}
+
+function userCardDisplayName(card: HTMLElement, username: Username): string | undefined {
+  const candidates = [
+    ".names .full-name",
+    ".names .name",
+    ".full-name",
+    ".name",
+    ".display-name",
+    "h1",
+    "h2"
+  ];
+  for (const selector of candidates) {
+    const text = card.querySelector<HTMLElement>(selector)?.textContent?.trim();
+    if (text && normalizeIdentityText(text) !== username) return text;
+  }
+  return undefined;
+}
+
+function userCardAvatarUrl(card: HTMLElement): string | undefined {
+  const avatar = card.querySelector<HTMLImageElement>(
+    "img.avatar, img.user-avatar, img[src*='/user_avatar/'], img[src*='/letter_avatar/']"
+  );
+  return avatar?.src || undefined;
+}
+
+function ensureFriendActionButton(surface: string) {
+  const selector = `.${profileActionButtonClass}[${friendActionSurfaceAttr}="${cssEscape(surface)}"]`;
+  let button = document.querySelector<HTMLButtonElement>(selector);
+  if (button) return button;
+  button = document.createElement("button");
+  if (surface === "profile") button.id = profileActionButtonId;
+  button.type = "button";
+  button.className = `btn btn-primary ${profileActionButtonClass}`;
+  button.setAttribute(friendActionSurfaceAttr, surface);
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void toggleFriendAction(button);
+  });
+  return button;
+}
+
+function updateFriendActionButton(button: HTMLButtonElement, state: AppState, target: FriendActionTarget) {
+  const active = Boolean(state.friends[target.username]);
+  button.dataset.username = target.username;
+  button.dataset.name = target.name ?? "";
+  button.dataset.avatarUrl = target.avatarUrl ?? "";
+  button.dataset.linuxdoFriendsActive = active ? "true" : "false";
+  button.disabled = false;
+  button.title = active ? "从我的佬朋友中移除" : "添加为我的佬朋友";
+  button.setAttribute("aria-label", active ? "取消视奸" : "视奸");
+  button.replaceChildren(discourseProfileActionIcon(active), document.createTextNode(active ? "取消视奸" : "视奸"));
+}
+
+function placeFriendActionButton(button: HTMLButtonElement, target: FriendActionTarget) {
+  const node = target.wrapWithListItem ? ensureFriendActionWrapper(button, target.surface) : button;
+  const anchorNode = target.anchor ? childUnderContainer(target.anchor, target.container) : null;
+  if (node.parentElement !== target.container) {
+    if (anchorNode) {
+      target.container.insertBefore(node, anchorNode.nextSibling);
+    } else {
+      target.container.append(node);
+    }
+    return;
+  }
+  if (anchorNode && anchorNode.nextSibling !== node) {
+    target.container.insertBefore(node, anchorNode.nextSibling);
+  }
+}
+
+function ensureFriendActionWrapper(button: HTMLButtonElement, surface: string) {
+  const existing = button.closest<HTMLElement>(`.${friendActionWrapperClass}`);
+  if (existing) return existing;
+  const wrapper = document.createElement("li");
+  wrapper.className = friendActionWrapperClass;
+  wrapper.setAttribute(friendActionSurfaceAttr, surface);
+  wrapper.append(button);
+  return wrapper;
+}
+
+function childUnderContainer(element: HTMLElement, container: HTMLElement): HTMLElement | null {
+  let current: HTMLElement | null = element;
+  while (current && current.parentElement && current.parentElement !== container) {
+    current = current.parentElement;
+  }
+  return current?.parentElement === container ? current : null;
+}
+
+function removeFriendActionButton(button: HTMLButtonElement) {
+  const wrapper = button.closest<HTMLElement>(`.${friendActionWrapperClass}`);
+  if (wrapper) {
+    wrapper.remove();
+    return;
+  }
+  button.remove();
+}
+
+async function toggleFriendAction(button: HTMLButtonElement) {
+  const username = button.dataset.username ? normalizeUsername(button.dataset.username) : currentProfileUsername();
+  if (!username || button.disabled) return;
+  const active = button.dataset.linuxdoFriendsActive === "true";
+  button.disabled = true;
+  button.replaceChildren(discourseProfileActionIcon(active), document.createTextNode(active ? "取消中..." : "视奸中..."));
+  try {
+    const response = active
+      ? await chrome.runtime.sendMessage({ type: "removeFriend", username })
+      : await chrome.runtime.sendMessage({ type: "addFriendFromKnownUser", user: knownUserFromFriendAction(button, username) });
+    if (!response?.ok) throw new Error(response?.error ?? "操作失败。");
+    latestState = response.data;
+    markFriends(response.data);
+    enhanceFriendActions(response.data);
+  } catch {
+    button.disabled = false;
+    if (latestState) {
+      updateFriendActionButton(button, latestState, {
+        surface: button.dataset.linuxdoFriendsSurface ?? "profile",
+        username,
+        container: button.parentElement ?? document.body,
+        name: button.dataset.name || undefined,
+        avatarUrl: button.dataset.avatarUrl || undefined
+      });
+    }
+  }
+}
+
+function knownUserFromFriendAction(button: HTMLButtonElement, username: Username): FollowedUserInput {
+  return {
+    username,
+    name: button.dataset.name || profilePageDisplayName(username),
+    avatarUrl: button.dataset.avatarUrl || profilePageAvatarUrl()
+  };
+}
+
+function profilePageDisplayName(username: Username): string | undefined {
+  const candidates = [
+    ".user-main .names .full-name",
+    ".user-main .names .name",
+    ".user-main .names h1",
+    ".user-main h1",
+    ".user-profile .names .full-name",
+    ".user-profile .names .name",
+    ".user-profile h1"
+  ];
+  for (const selector of candidates) {
+    const text = document.querySelector<HTMLElement>(selector)?.textContent?.trim();
+    if (text && normalizeIdentityText(text) !== username) return text;
+  }
+  return undefined;
+}
+
+function profilePageAvatarUrl(): string | undefined {
+  const avatar = document.querySelector<HTMLImageElement>(
+    ".user-main img.avatar, .user-main img.user-avatar, .user-main img[src*='/user_avatar/'], .user-main img[src*='/letter_avatar/'], .user-profile img.avatar, .user-profile img.user-avatar, .user-profile img[src*='/user_avatar/'], .user-profile img[src*='/letter_avatar/']"
+  );
+  if (!avatar?.src) return undefined;
+  return avatar.src;
+}
+
+function discourseProfileActionIcon(active: boolean) {
+  const span = document.createElement("span");
+  span.setAttribute("aria-hidden", "true");
+  span.innerHTML = active
+    ? '<svg class="fa d-icon d-icon-user-times svg-icon fa-width-auto svg-string" width="1em" height="1em" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><use href="#user-times"></use></svg>'
+    : discourseFriendIconSvg();
+  return span;
+}
+
 function clearMarkers() {
   document.querySelectorAll(`.${markerClass}`).forEach((marker) => marker.remove());
   document.querySelectorAll(`.${friendAvatarClass}`).forEach((marker) => marker.classList.remove(friendAvatarClass));
@@ -518,6 +929,10 @@ function normalizeDisplayText(text: string) {
 
 function normalizeIdentityText(text: string) {
   return text.trim().replace(/^@/, "").toLocaleLowerCase();
+}
+
+function cssEscape(value: string) {
+  return globalThis.CSS?.escape ? globalThis.CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
 }
 
 function unwrapElement(element: Element) {

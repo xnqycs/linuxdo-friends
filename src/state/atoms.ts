@@ -3,6 +3,7 @@ import type { Setter } from "jotai";
 import type {
   ActivityRefreshScope,
   AppState,
+  ConfigExportFile,
   FollowedUserInput,
   FriendProfileSummary,
   PageRepairResult,
@@ -269,6 +270,19 @@ export const resetExtensionAtom = atom(null, async (_get, set) => {
   set(loadingAtom, true);
   const response = await sendCommand<AppState>({ type: "resetExtension" });
   applyStateResponse(set, response);
+});
+
+export const exportConfigAtom = atom(null, async (_get, set) => {
+  const response = await sendCommand<ConfigExportFile>({ type: "exportConfig" });
+  if (!response.ok) set(statusMessageAtom, response.error);
+  return response;
+});
+
+export const importConfigAtom = atom(null, async (_get, set, json: string) => {
+  set(loadingAtom, true);
+  const response = await sendCommand<AppState>({ type: "importConfig", json });
+  applyStateResponse(set, response);
+  return response;
 });
 
 export const cacheAvatarsAtom = atom(null, async (_get, set, usernames?: string[]) => {

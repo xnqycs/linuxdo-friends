@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "佬朋友 - LinuxDo Friends",
   "short_name": "佬朋友",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "本地管理 linux.do 佬朋友，主动刷新状态和公开动态。",
   "action": {
     "default_title": "佬朋友"
@@ -33,6 +33,7 @@
   ],
   "host_permissions": [
     "https://api.github.com/*",
+    "https://github-api.lafish.workers.dev/*",
     "https://linux.do/*"
   ]
 }
