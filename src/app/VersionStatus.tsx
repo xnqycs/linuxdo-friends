@@ -4,10 +4,15 @@ import { GITHUB_LATEST_RELEASE_URL } from "../domain/versionCheck";
 import { formatRelativeTime } from "../shared/time";
 import type { UpdateCheckState } from "../shared/types";
 
+export const GITHUB_PROJECT_URL = "https://github.com/LeUKi/linuxdo-friends";
+
 export function VersionBadge({ state }: { state: UpdateCheckState }) {
   const latestVersion = state.status === "update-available" && state.latestVersion ? state.latestVersion : null;
   return (
     <div className="version-badge" aria-label="插件版本">
+      <a className="version-github-link" href={GITHUB_PROJECT_URL} target="_blank" rel="noreferrer" title="打开 GitHub 项目" aria-label="打开 GitHub 项目">
+        <GitHubMark size={13} />
+      </a>
       <span className="version-current">v{state.installedVersion}</span>
       {latestVersion ? (
         <a className="version-update-link" href={GITHUB_LATEST_RELEASE_URL} target="_blank" rel="noreferrer">
@@ -63,6 +68,17 @@ export function VersionDiagnostics({
       </div>
       {state.status === "error" || state.status === "no-release" ? <p className="version-diagnostic-error">{state.error}</p> : null}
     </section>
+  );
+}
+
+function GitHubMark({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        fill="currentColor"
+        d="M8 .2a8 8 0 0 0-2.5 15.6c.4.1.5-.2.5-.4v-1.5c-2.2.5-2.7-1-2.7-1-.3-.8-.7-1-.7-1-.6-.4 0-.4 0-.4.7 0 1.1.7 1.1.7.6 1.1 1.7.8 2.1.6.1-.5.2-.8.4-1-1.8-.2-3.6-.9-3.6-3.9 0-.9.3-1.6.8-2.2-.1-.2-.3-1 .1-2.1 0 0 .7-.2 2.2.8A7.5 7.5 0 0 1 8 4.6c.8 0 1.5.1 2.2.3 1.5-1 2.2-.8 2.2-.8.4 1.1.2 1.9.1 2.1.5.6.8 1.3.8 2.2 0 3-1.8 3.7-3.6 3.9.3.3.5.7.5 1.4v1.7c0 .2.1.5.5.4A8 8 0 0 0 8 .2Z"
+      />
+    </svg>
   );
 }
 

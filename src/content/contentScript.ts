@@ -10,6 +10,7 @@ import type {
   ContentScriptActivityResponse,
   ContentScriptAvatarResponse,
   ContentScriptCommand,
+  ContentScriptCurrentAccountResponse,
   ContentScriptFollowingResponse,
   ContentScriptProfileResponse,
   ContentScriptResponse,
@@ -661,13 +662,14 @@ function subscribeToRuntimeMessages() {
 }
 
 function runContentScriptCommand(message: ContentScriptCommand): Promise<ContentScriptResponse> {
+  if (message.type === "linuxdoFriends.extractCurrentAccount") return extractCurrentAccountFromPage();
   if (message.type === "linuxdoFriends.extractFollowing") return extractFollowingFromPage();
   if (message.type === "linuxdoFriends.extractProfile") return extractProfileFromPage(message.username);
   if (message.type === "linuxdoFriends.extractAvatar") return extractAvatarFromPage(message.username, message.avatarUrl);
   return extractActivityFromPage(message.username, message.kind ?? "all");
 }
 
-async function extractFollowingFromPage(): Promise<ContentScriptFollowingResponse> {
+async function extractCurrentAccountFromPage(): Promise<ContentScriptCurrentAccountResponse> {
   const login = await fetchJson("/latest.json");
   if (!login.ok) {
     return { ok: false, reason: login.reason, error: login.error };
@@ -676,6 +678,15 @@ async function extractFollowingFromPage(): Promise<ContentScriptFollowingRespons
   if (!username) {
     return { ok: false, reason: "unavailable", error: "当前 linux.do 页面没有识别到登录账号。" };
   }
+  return { ok: true, username };
+}
+
+async function extractFollowingFromPage(): Promise<ContentScriptFollowingResponse> {
+  const account = await extractCurrentAccountFromPage();
+  if (!account.ok) {
+    return account;
+  }
+  const { username } = account;
   const following = await fetchJson(`/u/${encodeURIComponent(username)}/follow/following.json`);
   if (!following.ok) {
     return { ok: false, reason: following.reason, error: following.error };
@@ -789,6 +800,7 @@ async function fetchJson(path: string): Promise<
 function isContentScriptCommand(value: unknown): value is ContentScriptCommand {
   if (typeof value !== "object" || value == null) return false;
   const message = value as { type?: unknown; username?: unknown; kind?: unknown; avatarUrl?: unknown };
+  if (message.type === "linuxdoFriends.extractCurrentAccount") return true;
   if (message.type === "linuxdoFriends.extractFollowing") return true;
   if (message.type === "linuxdoFriends.extractAvatar") {
     return typeof message.username === "string" && message.username.trim().length > 0 && typeof message.avatarUrl === "string";

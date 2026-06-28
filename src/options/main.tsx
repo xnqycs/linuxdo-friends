@@ -4,9 +4,12 @@ import { useAtom, useSetAtom } from "jotai";
 import {
   appStateAtom,
   checkForUpdatesAtom,
+  clearCacheAtom,
+  identifyCurrentAccountAtom,
   loadStateAtom,
   loadUpdateCheckAtom,
   observeUpdateCheckAtom,
+  resetExtensionAtom,
   updateCheckAtom
 } from "../state/atoms";
 import { sendCommand } from "../messages/client";
@@ -19,7 +22,10 @@ export function OptionsApp() {
   const loadState = useSetAtom(loadStateAtom);
   const loadUpdateCheck = useSetAtom(loadUpdateCheckAtom);
   const checkForUpdates = useSetAtom(checkForUpdatesAtom);
+  const clearCache = useSetAtom(clearCacheAtom);
+  const identifyCurrentAccount = useSetAtom(identifyCurrentAccountAtom);
   const observeUpdateCheck = useSetAtom(observeUpdateCheckAtom);
+  const resetExtension = useSetAtom(resetExtensionAtom);
   const [relativeNow, setRelativeNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -39,6 +45,19 @@ export function OptionsApp() {
     if (response.ok) setState(response.data);
   }
 
+  async function handleIdentifyAccount() {
+    await identifyCurrentAccount(false);
+  }
+
+  async function handleClearCache() {
+    await clearCache();
+  }
+
+  async function handleResetExtension() {
+    if (!window.confirm("确认全量重置佬朋友？这会清空佬朋友、设置、账号和所有缓存。")) return;
+    await resetExtension();
+  }
+
   return (
     <main className="options-shell">
       <header className="header">
@@ -52,6 +71,27 @@ export function OptionsApp() {
       </header>
 
       <VersionDiagnostics now={relativeNow} onCheck={() => void checkForUpdates(true)} state={updateCheck} />
+
+      <section className="panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>账号识别</h2>
+            <p className="panel-subtitle">
+              {state.currentAccount
+                ? `当前识别为 @${state.currentAccount.username}`
+                : "尚未识别 linux.do 登录账号。"}
+            </p>
+          </div>
+          <button className="small-action" type="button" onClick={() => void handleIdentifyAccount()}>
+            重新识别账号
+          </button>
+        </div>
+        {state.currentAccount?.verifiedAt ? (
+          <p className="settings-meta">上次识别：{new Date(state.currentAccount.verifiedAt).toLocaleString()}</p>
+        ) : (
+          <p className="settings-meta">打开已登录的 linux.do 页面后，插件会优先通过页面脚本识别账号。</p>
+        )}
+      </section>
 
       <section className="panel">
         <h2>刷新策略</h2>
@@ -83,6 +123,23 @@ export function OptionsApp() {
           <li>不生成精确在线时间线，不做连续在线监控。</li>
           <li>不读取或导出 Cookie，不使用远程服务器代请求。</li>
         </ul>
+      </section>
+
+      <section className="panel danger-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>维护</h2>
+            <p className="panel-subtitle">清理缓存会保留佬朋友、设置和当前账号；全量重置会恢复到刚安装状态。</p>
+          </div>
+          <div className="maintenance-actions">
+            <button className="small-action" type="button" onClick={() => void handleClearCache()}>
+              清理缓存
+            </button>
+            <button className="small-action danger-action" type="button" onClick={() => void handleResetExtension()}>
+              全量重置
+            </button>
+          </div>
+        </div>
       </section>
     </main>
   );

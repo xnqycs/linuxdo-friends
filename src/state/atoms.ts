@@ -253,6 +253,24 @@ export const syncFollowsAtom = atom(null, async (_get, set) => {
   applyStateResponse(set, response);
 });
 
+export const identifyCurrentAccountAtom = atom(null, async (_get, set, quiet?: boolean) => {
+  if (!quiet) set(loadingAtom, true);
+  const response = await sendCommand<AppState>({ type: "identifyCurrentAccount" });
+  applyStateResponse(set, response, response.ok && quiet ? null : undefined);
+});
+
+export const clearCacheAtom = atom(null, async (_get, set) => {
+  set(loadingAtom, true);
+  const response = await sendCommand<AppState>({ type: "clearCache" });
+  applyStateResponse(set, response);
+});
+
+export const resetExtensionAtom = atom(null, async (_get, set) => {
+  set(loadingAtom, true);
+  const response = await sendCommand<AppState>({ type: "resetExtension" });
+  applyStateResponse(set, response);
+});
+
 export const cacheAvatarsAtom = atom(null, async (_get, set, usernames?: string[]) => {
   const response = await sendCommand<AppState>({ type: "cacheAvatars", usernames });
   if (response.ok) {
@@ -309,11 +327,11 @@ async function refreshPageScriptStatus(set: Setter) {
 function applyStateResponse(
   set: Setter,
   response: { ok: true; data: AppState } | { ok: false; error: string },
-  successMessage?: string
+  successMessage?: string | null
 ) {
   if (response.ok) {
     set(appStateAtom, response.data);
-    set(statusMessageAtom, successMessage ?? response.data.lastSync?.message ?? null);
+    set(statusMessageAtom, successMessage === null ? null : (successMessage ?? response.data.lastSync?.message ?? null));
   } else {
     set(statusMessageAtom, response.error);
   }

@@ -246,6 +246,7 @@ export type RefreshSource = "direct_fetch" | "existing_tab" | "manual";
 
 export type BackgroundCommand =
   | { type: "getState" }
+  | { type: "identifyCurrentAccount" }
   | { type: "seedFollowedUser"; user: FollowedUserInput }
   | { type: "lookupFriendProfile"; username: Username }
   | { type: "addFriendFromKnownUser"; user: FollowedUserInput; profile?: FriendProfileSummary }
@@ -264,7 +265,9 @@ export type BackgroundCommand =
   | { type: "openSidePanel" }
   | { type: "openOptionsPage" }
   | { type: "openLinuxDoHome" }
-  | { type: "updateSettings"; settings: Partial<RefreshSettings> };
+  | { type: "updateSettings"; settings: Partial<RefreshSettings> }
+  | { type: "clearCache" }
+  | { type: "resetExtension" };
 
 export type BackgroundResponse<T = unknown> =
   | { ok: true; data: T }
@@ -280,12 +283,17 @@ export interface VisibleFriend {
 }
 
 export type ContentScriptCommand =
+  | { type: "linuxdoFriends.extractCurrentAccount" }
   | { type: "linuxdoFriends.extractFollowing" }
   | { type: "linuxdoFriends.extractProfile"; username: Username }
   | { type: "linuxdoFriends.extractActivity"; username: Username; kind?: ActivityKindFilter | "user_actions" }
   | { type: "linuxdoFriends.extractAvatar"; username: Username; avatarUrl: string };
 
 export type ContentScriptFailureResponse = { ok: false; reason: RefreshFailureReason | "unavailable"; error: string };
+
+export type ContentScriptCurrentAccountResponse =
+  | { ok: true; username: Username }
+  | ContentScriptFailureResponse;
 
 export type ContentScriptFollowingResponse =
   | { ok: true; username: Username; users: FollowedUserInput[] }
@@ -304,6 +312,7 @@ export type ContentScriptAvatarResponse =
   | ContentScriptFailureResponse;
 
 export type ContentScriptResponse =
+  | ContentScriptCurrentAccountResponse
   | ContentScriptFollowingResponse
   | ContentScriptActivityResponse
   | ContentScriptProfileResponse

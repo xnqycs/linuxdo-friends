@@ -9,6 +9,7 @@ import {
   planActivityRefreshTargets,
   type ActivityRequestStep
 } from "../domain/activityRefresh";
+import { defaultAppState } from "../domain/defaultState";
 import { addFriendFromKnownUser, addFriendFromProfile, removeFriend, updateFriend, upsertFollowedUser, upsertFriendProfile } from "../domain/friends";
 import {
   defaultUpdateCheckState,
@@ -30,6 +31,7 @@ import type {
   BackgroundResponse,
   ContentScriptActivityResponse,
   ContentScriptAvatarResponse,
+  ContentScriptCurrentAccountResponse,
   ContentScriptFollowingResponse,
   ContentScriptHeartbeatMessage,
   ContentScriptProfileResponse,
@@ -42,10 +44,11 @@ import type {
   UpdateCheckState,
   Username
 } from "../shared/types";
-import { savePageScriptStatusState } from "../storage/pageScriptStatusStorage";
-import { saveSiteDataProgressState } from "../storage/siteDataProgressStorage";
+import { PAGE_SCRIPT_STATUS_STORAGE_KEY, savePageScriptStatusState } from "../storage/pageScriptStatusStorage";
+import { SITE_DATA_PROGRESS_STORAGE_KEY, saveSiteDataProgressState } from "../storage/siteDataProgressStorage";
 import { loadState, saveState, updateState } from "../storage/storage";
-import { loadUpdateCheckState, saveUpdateCheckState } from "../storage/updateCheckStorage";
+import { UPDATE_CHECK_STORAGE_KEY, loadUpdateCheckState, saveUpdateCheckState } from "../storage/updateCheckStorage";
+import { allUiSceneStorageKeys } from "../storage/uiSceneStorage";
 
 const refreshAdapter = createRefreshAdapter();
 interface ActiveSiteDataTask {
@@ -105,6 +108,8 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
   switch (command.type) {
     case "getState":
       return ok(await loadState());
+    case "identifyCurrentAccount":
+      return ok(await identifyCurrentAccount());
     case "seedFollowedUser":
       return ok(await updateState((state) => upsertFollowedUser(state, { ...command.user, source: "manual" })));
     case "lookupFriendProfile":
@@ -153,6 +158,106 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
           }
         }))
       );
+    case "clearCache":
+      return ok(await clearCache());
+    case "resetExtension":
+      return ok(await resetExtension());
+  }
+}
+
+async function identifyCurrentAccount(): Promise<AppState> {
+  const current = await loadState();
+  const result = (await identifyCurrentAccountFromExistingTab(current)) ?? (await refreshAdapter.identifyCurrentAccount(current));
+  const next = {
+    ...result.state,
+    lastSync: result.result
+  };
+  await saveState(next);
+  return next;
+}
+
+async function identifyCurrentAccountFromExistingTab(state: AppState): Promise<{ state: AppState; result: RefreshResult } | null> {
+  const response = await sendToAvailableLinuxDoTab(sendExtractCurrentAccountMessage);
+  if (!response) return null;
+  if (!response.ok) {
+    return {
+      state,
+      result: {
+        ok: false,
+        source: "existing_tab",
+        reason: response.reason === "unavailable" ? "unavailable" : response.reason,
+        message: response.error,
+        refreshedAt: nowIso()
+      }
+    };
+  }
+  return {
+    state: {
+      ...state,
+      currentAccount: { username: response.username, verifiedAt: nowIso(), source: "latest_header" }
+    },
+    result: {
+      ok: true,
+      source: "existing_tab",
+      message: `已识别 @${response.username}。`,
+      refreshedAt: nowIso()
+    }
+  };
+}
+
+async function clearCache(): Promise<AppState> {
+  const next = await updateState((state) => ({
+    ...state,
+    followedUsers: {},
+    friendProfiles: {},
+    activity: {},
+    activityRefreshLedger: {},
+    activityWatermarks: {},
+    activityFeedWaterlineAt: undefined,
+    avatarCache: {},
+    lastSync: {
+      ok: true,
+      source: "manual",
+      message: "已清理缓存，佬朋友和设置已保留。",
+      refreshedAt: nowIso()
+    }
+  }));
+  await removeSessionStorageKeys([SITE_DATA_PROGRESS_STORAGE_KEY]);
+  lastSiteDataProgress = null;
+  return next;
+}
+
+async function resetExtension(): Promise<AppState> {
+  const next: AppState = {
+    ...defaultAppState,
+    lastSync: {
+      ok: true,
+      source: "manual",
+      message: "已全量重置插件。",
+      refreshedAt: nowIso()
+    }
+  };
+  await saveState(next);
+  await removeLocalStorageKeys([UPDATE_CHECK_STORAGE_KEY]);
+  await removeSessionStorageKeys([SITE_DATA_PROGRESS_STORAGE_KEY, PAGE_SCRIPT_STATUS_STORAGE_KEY, ...allUiSceneStorageKeys]);
+  pageScriptHeartbeats.clear();
+  lastSiteDataProgress = null;
+  return next;
+}
+
+async function removeLocalStorageKeys(keys: string[]) {
+  try {
+    await chrome.storage?.local?.remove?.(keys);
+  } catch {
+    // Storage cleanup is best effort; the canonical app state is saved separately.
+  }
+}
+
+async function removeSessionStorageKeys(keys: string[]) {
+  try {
+    await chrome.storage?.session?.remove?.(keys);
+  } catch {
+    // Session storage may be unavailable in tests or older Chrome surfaces.
   }
 }
 
@@ -703,6 +808,7 @@ async function cacheAvatarsFromExistingTab(usernames?: Username[]): Promise<AppS
 }
 
 type LinuxDoContentResponse =
+  | ContentScriptCurrentAccountResponse
   | ContentScriptFollowingResponse
   | ContentScriptProfileResponse
   | ContentScriptActivityResponse
@@ -891,6 +997,17 @@ async function sendExtractFollowingMessage(tabId: number): Promise<ContentScript
       | ContentScriptFollowingResponse
       | undefined;
     return response ?? { ok: false, reason: "unavailable", error: "已打开的 linux.do 页面没有响应同步请求，请刷新页面后重试。" };
+  } catch {
+    return { ok: false, reason: "unavailable", error: "已打开的 linux.do 页面未加载佬朋友脚本，请刷新 linux.do 页面后重试。" };
+  }
+}
+
+async function sendExtractCurrentAccountMessage(tabId: number): Promise<ContentScriptCurrentAccountResponse> {
+  try {
+    const response = (await chrome.tabs.sendMessage(tabId, { type: "linuxdoFriends.extractCurrentAccount" })) as
+      | ContentScriptCurrentAccountResponse
+      | undefined;
+    return response ?? { ok: false, reason: "unavailable", error: "已打开的 linux.do 页面没有响应账号识别请求，请刷新页面后重试。" };
   } catch {
     return { ok: false, reason: "unavailable", error: "已打开的 linux.do 页面未加载佬朋友脚本，请刷新 linux.do 页面后重试。" };
   }

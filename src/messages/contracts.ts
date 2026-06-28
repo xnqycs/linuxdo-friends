@@ -5,6 +5,7 @@ export function isBackgroundCommand(value: unknown): value is BackgroundCommand 
   const command = value as Record<string, unknown>;
   switch (command.type) {
     case "getState":
+    case "identifyCurrentAccount":
     case "syncFollowedUsers":
     case "getSiteDataProgress":
     case "getPageScriptStatus":
@@ -12,6 +13,8 @@ export function isBackgroundCommand(value: unknown): value is BackgroundCommand 
     case "openSidePanel":
     case "openOptionsPage":
     case "openLinuxDoHome":
+    case "clearCache":
+    case "resetExtension":
       return true;
     case "checkForUpdates":
       return command.force === undefined || typeof command.force === "boolean";

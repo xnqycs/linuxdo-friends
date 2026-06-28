@@ -366,6 +366,44 @@ describe("content script friend markers", () => {
     expect(pageStyle).toContain("width: calc(100% - 46px)");
   });
 
+  it("extracts the current account without requesting following users", async () => {
+    let listener: ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response: unknown) => void) => boolean) | null = null;
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn(async () => ({ ok: true, data: defaultAppState })),
+        onMessage: {
+          addListener: vi.fn((callback) => {
+            listener = callback;
+          })
+        }
+      },
+      storage: {
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ topic_list: { topics: [] } }), {
+          status: 200,
+          headers: { "x-discourse-username": "LaFish" }
+        })
+      )
+    );
+
+    await import("./contentScript");
+    expect(listener).toBeTruthy();
+    const response = await new Promise((resolve) => {
+      listener?.({ type: "linuxdoFriends.extractCurrentAccount" }, {}, resolve);
+    });
+
+    expect(response).toMatchObject({ ok: true, username: "lafish" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith("/latest.json", expect.objectContaining({ credentials: "same-origin" }));
+  });
+
   it("extracts following users through same-origin page requests", async () => {
     let listener: ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response: unknown) => void) => boolean) | null = null;
     vi.stubGlobal("chrome", {

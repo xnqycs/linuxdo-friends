@@ -10,6 +10,12 @@ export function createMockStorage(initial: Record<string, unknown> = {}) {
     async set(value: Record<string, unknown>) {
       Object.assign(store, value);
     },
+    async remove(key: string | string[]) {
+      const keys = Array.isArray(key) ? key : [key];
+      for (const item of keys) {
+        delete store[item];
+      }
+    },
     dump() {
       return { ...store };
     }

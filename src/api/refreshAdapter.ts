@@ -44,6 +44,7 @@ type CollectedActivityTarget = {
 };
 
 export interface RefreshAdapter {
+  identifyCurrentAccount(state: AppState): Promise<{ state: AppState; result: RefreshResult }>;
   syncFollowedUsers(state: AppState): Promise<{ state: AppState; result: RefreshResult }>;
   lookupFriendProfile(username: Username): Promise<FriendProfileFetchResult>;
   addFriendByProfile(state: AppState, username: Username): Promise<{ state: AppState; result: RefreshResult }>;
@@ -61,6 +62,24 @@ export interface RefreshAdapter {
 
 export function createRefreshAdapter(fetchImpl: typeof fetch = fetch): RefreshAdapter {
   return {
+    async identifyCurrentAccount(state) {
+      const login = await probeCurrentAccount(fetchImpl);
+      if (!login.ok) {
+        return { state, result: login.result };
+      }
+      return {
+        state: {
+          ...state,
+          currentAccount: { username: login.username, verifiedAt: nowIso(), source: "latest_header" }
+        },
+        result: {
+          ok: true,
+          source: "direct_fetch",
+          message: `已识别 @${login.username}。`,
+          refreshedAt: nowIso()
+        }
+      };
+    },
     async syncFollowedUsers(state) {
       const login = await probeCurrentAccount(fetchImpl);
       if (!login.ok) {

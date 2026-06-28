@@ -304,9 +304,36 @@ describe("FriendsApp UI scene persistence", () => {
     const chromeMock = setupChrome({ session });
     const { container } = await renderFriendsApp("side-panel");
 
+    expect(container.querySelector<HTMLAnchorElement>(".version-github-link")?.href).toBe("https://github.com/LeUKi/linuxdo-friends");
     expect(container.querySelector(".version-current")?.textContent).toBe("v1.0.1");
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "getUpdateCheck" });
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "checkForUpdates", force: undefined });
+  });
+
+  it("auto-identifies the current account instead of showing a dead local tag", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({ session, state: defaultAppState });
+    const { container } = await renderFriendsApp("side-panel");
+
+    expect(container.textContent).not.toContain("本地优先");
+    expect(container.textContent).toContain("@lafish");
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "identifyCurrentAccount" });
+  });
+
+  it("keeps a manual identify account button when automatic identification fails", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({ session, state: defaultAppState, identifyFails: true });
+    const { container } = await renderFriendsApp("side-panel");
+
+    expect(container.textContent).not.toContain("本地优先");
+    expect(getButton(container, "识别账号")).toBeTruthy();
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "identifyCurrentAccount" });
+
+    await act(async () => {
+      getButton(container, "识别账号").click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "identifyCurrentAccount" });
   });
 
   it("highlights a newer version in the main plugin surfaces", async () => {
@@ -411,6 +438,7 @@ function setupChrome({
     name: "Neo",
     refreshedAt: "2026-06-28T00:00:00.000Z"
   }),
+  identifyFails = false,
   updateCheck = {
     installedVersion: "1.0.1",
     latestReleaseUrl: "https://github.com/LeUKi/linuxdo-friends/releases/latest",
@@ -430,6 +458,7 @@ function setupChrome({
   progress?: SiteDataTaskProgress | null;
   session: ReturnType<typeof createMockStorage>;
   state?: typeof defaultAppState;
+  identifyFails?: boolean;
   updateCheck?: {
     installedVersion: string;
     latestReleaseUrl: string;
@@ -449,6 +478,16 @@ function setupChrome({
     if (message.type === "getSiteDataProgress") return { ok: true, data: progress };
     if (message.type === "getUpdateCheck") return { ok: true, data: updateCheck };
     if (message.type === "checkForUpdates") return { ok: true, data: updateCheck };
+    if (message.type === "identifyCurrentAccount") {
+      if (identifyFails) return { ok: false, error: "需要打开 linux.do 后识别。" };
+      return {
+        ok: true,
+        data: {
+          ...state,
+          currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" }
+        }
+      };
+    }
     if (message.type === "openSidePanel") return { ok: true, data: { message: "已打开插件侧栏。" } };
     if (message.type === "openOptionsPage") return { ok: true, data: { message: "已打开配置页。" } };
     return { ok: true, data: state };

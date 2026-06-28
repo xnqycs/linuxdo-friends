@@ -28,6 +28,7 @@ describe("OptionsApp update diagnostics", () => {
     const { container } = await renderOptionsApp();
 
     expect(container.querySelector(".version-current")?.textContent).toBe("v1.0.0");
+    expect(container.querySelector<HTMLAnchorElement>(".version-github-link")?.href).toBe("https://github.com/LeUKi/linuxdo-friends");
     expect(container.querySelector(".version-update-link")?.textContent).toContain("新 v1.1.0");
     expect(container.textContent).toContain("发现新版本");
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "checkForUpdates", force: undefined });
@@ -59,6 +60,41 @@ describe("OptionsApp update diagnostics", () => {
     });
 
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "checkForUpdates", force: true });
+  });
+
+  it("identifies the current account from the options page", async () => {
+    const chromeMock = setupChrome();
+    const { container } = await renderOptionsApp();
+
+    await act(async () => {
+      getButton(container, "重新识别账号").click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "identifyCurrentAccount" });
+  });
+
+  it("clears cache without confirmation from the options page", async () => {
+    const chromeMock = setupChrome();
+    const { container } = await renderOptionsApp();
+
+    await act(async () => {
+      getButton(container, "清理缓存").click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "clearCache" });
+  });
+
+  it("fully resets only after confirmation from the options page", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const chromeMock = setupChrome();
+    const { container } = await renderOptionsApp();
+
+    await act(async () => {
+      getButton(container, "全量重置").click();
+    });
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "resetExtension" });
   });
 });
 
@@ -100,6 +136,17 @@ function setupChrome({
     if (message.type === "getState") return { ok: true, data: defaultAppState };
     if (message.type === "getUpdateCheck") return { ok: true, data: updateCheck };
     if (message.type === "checkForUpdates") return { ok: true, data: updateCheck };
+    if (message.type === "identifyCurrentAccount") {
+      return {
+        ok: true,
+        data: {
+          ...defaultAppState,
+          currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" }
+        }
+      };
+    }
+    if (message.type === "clearCache") return { ok: true, data: defaultAppState };
+    if (message.type === "resetExtension") return { ok: true, data: defaultAppState };
     if (message.type === "updateSettings") return { ok: true, data: defaultAppState };
     return { ok: false, error: "unexpected command" };
   });

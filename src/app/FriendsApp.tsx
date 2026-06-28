@@ -22,6 +22,7 @@ import {
   cacheAvatarsAtom,
   checkForUpdatesAtom,
   clearStatusMessageAtom,
+  identifyCurrentAccountAtom,
   loadPageScriptStatusAtom,
   loadingAtom,
   loadSiteDataProgressAtom,
@@ -163,6 +164,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const observeUiScene = useSetAtom(observeUiSceneAtom);
   const addFriendFromKnownUser = useSetAtom(addFriendFromKnownUserAtom);
   const cacheAvatars = useSetAtom(cacheAvatarsAtom);
+  const identifyCurrentAccount = useSetAtom(identifyCurrentAccountAtom);
   const openLinuxDoHome = useSetAtom(openLinuxDoHomeAtom);
   const openOptionsPage = useSetAtom(openOptionsPageAtom);
   const openSidePanel = useSetAtom(openSidePanelAtom);
@@ -209,6 +211,11 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
     observeUpdateCheck,
     observeUiScene
   ]);
+
+  useEffect(() => {
+    if (!appStateLoaded || state.currentAccount) return;
+    void identifyCurrentAccount(true);
+  }, [appStateLoaded, identifyCurrentAccount, state.currentAccount]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setRelativeNow(Date.now()), RELATIVE_TIME_TICK_MS);
@@ -282,7 +289,13 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
                   <OptionsPageButton onOpen={() => void openOptionsPage()} />
                 </div>
               )}
-              <span className="badge">{state.currentAccount ? `@${state.currentAccount.username}` : "本地优先"}</span>
+              {state.currentAccount ? (
+                <span className="badge">@{state.currentAccount.username}</span>
+              ) : (
+                <button className="badge badge-button" type="button" onClick={() => void identifyCurrentAccount(false)} disabled={loading}>
+                  识别账号
+                </button>
+              )}
             </div>
           </header>
 

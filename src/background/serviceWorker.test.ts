@@ -14,6 +14,7 @@ describe("message contracts", () => {
 
   it("accepts known commands", () => {
     expect(isBackgroundCommand({ type: "lookupFriendProfile", username: "neil" })).toBe(true);
+    expect(isBackgroundCommand({ type: "identifyCurrentAccount" })).toBe(true);
     expect(isBackgroundCommand({ type: "addFriendFromKnownUser", user: { username: "neil", name: "Neo" } })).toBe(true);
     expect(
       isBackgroundCommand({
@@ -36,6 +37,8 @@ describe("message contracts", () => {
     expect(isBackgroundCommand({ type: "openSidePanel" })).toBe(true);
     expect(isBackgroundCommand({ type: "openOptionsPage" })).toBe(true);
     expect(isBackgroundCommand({ type: "openLinuxDoHome" })).toBe(true);
+    expect(isBackgroundCommand({ type: "clearCache" })).toBe(true);
+    expect(isBackgroundCommand({ type: "resetExtension" })).toBe(true);
   });
 
   it("rejects unknown commands", () => {
@@ -356,6 +359,29 @@ describe("message contracts", () => {
       }
     });
     expect(tabs.sendMessage).toHaveBeenCalledWith(321, { type: "linuxdoFriends.extractProfile", username: "Neil" });
+  });
+
+  it("identifies the current account without syncing the following list", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("Enable JavaScript and cookies to continue", { status: 429 })));
+    const { send, tabs } = await setupWorker({
+      tabs: {
+        query: vi.fn(async () => [{ id: 123, url: "https://linux.do/t/topic/1" } as chrome.tabs.Tab]),
+        sendMessage: vi.fn(async () => ({ ok: true, username: "lafish" }))
+      }
+    });
+
+    const response = await send({ type: "identifyCurrentAccount" });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        currentAccount: { username: "lafish" },
+        followedUsers: {},
+        lastSync: { ok: true, source: "existing_tab", message: "已识别 @lafish。" }
+      }
+    });
+    expect(tabs.sendMessage).toHaveBeenCalledWith(123, { type: "linuxdoFriends.extractCurrentAccount" });
+    expect(tabs.sendMessage).not.toHaveBeenCalledWith(123, { type: "linuxdoFriends.extractFollowing" });
   });
 
   it("falls back to an existing linux.do tab when direct follow sync hits a challenge", async () => {
@@ -792,6 +818,124 @@ describe("message contracts", () => {
       }
     });
   });
+
+  it("clears cached data while preserving friends, settings, and current account", async () => {
+    const state = {
+      ...addFriendFromProfile(defaultAppState, { username: "Neil", name: "Neo", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      followedUsers: {
+        neil: {
+          username: "neil",
+          source: "sync",
+          followedAt: "2026-06-28T00:00:00.000Z",
+          updatedAt: "2026-06-28T00:00:00.000Z"
+        }
+      },
+      activity: {
+        neil: { username: "neil", refreshedAt: "2026-06-28T00:00:00.000Z", items: [] }
+      },
+      activityRefreshLedger: {
+        "neil:topic": {
+          scopeKey: "topic:neil",
+          username: "neil",
+          kind: "topic",
+          refreshedAt: "2026-06-28T00:00:00.000Z",
+          source: "direct_fetch",
+          itemCount: 1
+        }
+      },
+      activityWatermarks: {
+        "neil:topic": {
+          scopeKey: "topic:neil",
+          username: "neil",
+          kind: "topic",
+          latestOccurredAt: "2026-06-28T00:00:00.000Z",
+          updatedAt: "2026-06-28T00:00:00.000Z",
+          source: "direct_fetch"
+        }
+      },
+      activityFeedWaterlineAt: "2026-06-28T00:00:00.000Z",
+      avatarCache: {
+        neil: {
+          username: "neil",
+          sourceUrl: "https://linux.do/avatar.png",
+          dataUrl: "data:image/png;base64,abc",
+          contentType: "image/png",
+          byteLength: 3,
+          updatedAt: "2026-06-28T00:00:00.000Z"
+        }
+      },
+      currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" as const },
+      settings: { ...defaultAppState.settings, refreshIntervalMinutes: 60 }
+    };
+    const { send, sessionStorage } = await setupWorker({
+      initialState: state,
+      initialSession: { [SITE_DATA_PROGRESS_STORAGE_KEY]: { taskId: "old" } }
+    });
+
+    const response = await send({ type: "clearCache" });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        friends: { neil: { username: "neil" } },
+        followedUsers: {},
+        friendProfiles: {},
+        activity: {},
+        activityRefreshLedger: {},
+        activityWatermarks: {},
+        avatarCache: {},
+        currentAccount: { username: "lafish" },
+        settings: { refreshIntervalMinutes: 60 },
+        lastSync: { ok: true, message: "已清理缓存，佬朋友和设置已保留。" }
+      }
+    });
+    expect(sessionStorage.dump()).not.toHaveProperty(SITE_DATA_PROGRESS_STORAGE_KEY);
+  });
+
+  it("fully resets local extension data and session state", async () => {
+    const state = {
+      ...addFriendFromProfile(defaultAppState, { username: "Neil", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" as const }
+    };
+    const { send, localStorage, sessionStorage } = await setupWorker({
+      initialState: state,
+      initialUpdateCheck: {
+        installedVersion: "1.0.0",
+        latestReleaseUrl: "https://github.com/LeUKi/linuxdo-friends/releases/latest",
+        status: "up-to-date",
+        latestVersion: "1.0.0",
+        checkedAt: "2026-06-28T00:00:00.000Z",
+        source: "github_release"
+      },
+      initialSession: {
+        [SITE_DATA_PROGRESS_STORAGE_KEY]: { taskId: "old" },
+        [PAGE_SCRIPT_STATUS_STORAGE_KEY]: { status: "connected" },
+        "linuxdoFriendsUiScene.tab": "feed"
+      }
+    });
+
+    const response = await send({ type: "resetExtension" });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        friends: {},
+        settings: defaultAppState.settings,
+        lastSync: { ok: true, message: "已全量重置插件。" }
+      }
+    });
+    expect((response as { ok: true; data: typeof defaultAppState }).data.currentAccount).toBeUndefined();
+    expect(localStorage.dump()).toMatchObject({
+      linuxdoFriendsState: {
+        friends: {}
+      }
+    });
+    expect((localStorage.dump().linuxdoFriendsState as typeof defaultAppState).currentAccount).toBeUndefined();
+    expect(localStorage.dump()).not.toHaveProperty("linuxdoFriendsUpdateCheck");
+    expect(sessionStorage.dump()).not.toHaveProperty(SITE_DATA_PROGRESS_STORAGE_KEY);
+    expect(sessionStorage.dump()).not.toHaveProperty(PAGE_SCRIPT_STATUS_STORAGE_KEY);
+    expect(sessionStorage.dump()).not.toHaveProperty("linuxdoFriendsUiScene.tab");
+  });
 });
 
 type MockTabs = {
@@ -804,7 +948,13 @@ type MockTabs = {
 };
 
 async function setupWorker(
-  overrides: { tabs?: MockTabs; initialState?: unknown; initialUpdateCheck?: unknown; includeSessionAccessLevel?: boolean } = {}
+  overrides: {
+    tabs?: MockTabs;
+    initialState?: unknown;
+    initialUpdateCheck?: unknown;
+    initialSession?: Record<string, unknown>;
+    includeSessionAccessLevel?: boolean;
+  } = {}
 ) {
   let listener: ((message: unknown, sender: chrome.runtime.MessageSender, sendResponse: (response: unknown) => void) => boolean) | null = null;
   const runtime = {
@@ -834,7 +984,7 @@ async function setupWorker(
     setPanelBehavior: vi.fn()
   };
   const sessionStorage = {
-    ...createMockStorage({}),
+    ...createMockStorage(overrides.initialSession ?? {}),
     ...(overrides.includeSessionAccessLevel === false ? {} : { setAccessLevel: vi.fn() })
   };
   const localStorage = createMockStorage({

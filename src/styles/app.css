@@ -171,12 +171,25 @@ input[type="checkbox"] {
 }
 
 .badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--topic-border);
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent-text);
   padding: 4px 8px;
   font-size: 12px;
+}
+
+.badge-button {
+  min-height: 0;
+  cursor: pointer;
+}
+
+.badge-button:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  background: var(--accent-muted);
 }
 
 .version-badge {
@@ -203,6 +216,25 @@ input[type="checkbox"] {
   padding: 3px 7px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.version-github-link {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.version-github-link:hover {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-text);
 }
 
 .version-update-link,
@@ -618,6 +650,53 @@ input[type="checkbox"] {
 .section-title h2,
 .panel h2 {
   font-size: 15px;
+}
+
+.options-shell .panel {
+  padding: 14px;
+}
+
+.panel-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-title-row > div:first-child {
+  min-width: 0;
+}
+
+.panel-subtitle,
+.settings-meta {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.maintenance-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.danger-panel {
+  border-color: var(--danger-border);
+}
+
+.danger-action {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.danger-action:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: #551a28;
 }
 
 .list {
