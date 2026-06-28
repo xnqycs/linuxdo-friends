@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "佬朋友 - LinuxDo Friends",
+  "short_name": "佬朋友",
+  "version": "1.0.0",
+  "description": "本地管理 linux.do 佬朋友，主动刷新状态和公开动态。",
+  "action": {
+    "default_title": "佬朋友"
+  },
+  "side_panel": {
+    "default_path": "src/side-panel/index.html"
+  },
+  "options_page": "src/options/index.html",
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://linux.do/*"
+      ],
+      "js": [
+        "content-script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": [
+    "storage",
+    "tabs",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://linux.do/*"
+  ]
+}

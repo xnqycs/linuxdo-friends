@@ -1,0 +1,55 @@
+import { resolve } from "node:path";
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({
+  plugins: [
+    react(),
+    {
+      name: "drop-content-css-asset",
+      generateBundle(_options, bundle) {
+        for (const fileName of Object.keys(bundle)) {
+          if (fileName.endsWith(".css")) {
+            delete bundle[fileName];
+          }
+        }
+      }
+    }
+  ],
+  define: {
+    "process.env.NODE_ENV": JSON.stringify("production")
+  },
+  resolve: {
+    alias: [
+      {
+        find: /^react$/,
+        replacement: resolve(__dirname, "node_modules/react/cjs/react.production.js")
+      },
+      {
+        find: /^react\/jsx-runtime$/,
+        replacement: resolve(__dirname, "node_modules/react/cjs/react-jsx-runtime.production.js")
+      },
+      {
+        find: /^react-dom\/client$/,
+        replacement: resolve(__dirname, "node_modules/react-dom/cjs/react-dom-client.production.js")
+      }
+    ]
+  },
+  build: {
+    outDir: "dist",
+    emptyOutDir: false,
+    cssCodeSplit: false,
+    sourcemap: true,
+    lib: {
+      entry: resolve(__dirname, "src/content/contentScript.ts"),
+      name: "LinuxDoFriendsContentScript",
+      formats: ["iife"],
+      fileName: () => "content-script.js"
+    },
+    rollupOptions: {
+      output: {
+        assetFileNames: "assets/[name]-[hash][extname]"
+      }
+    }
+  }
+});
