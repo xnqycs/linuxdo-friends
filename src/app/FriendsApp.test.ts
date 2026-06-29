@@ -11,8 +11,8 @@ import { AUTO_REFRESH_SESSION_STORAGE_KEY, loadAutoRefreshSessionState } from ".
 import { resetRuntimeObserversForTest } from "../state/atoms";
 import { resetAutoRefreshSessionObserverForTest } from "../state/autoRefreshAtoms";
 import { resetUiSceneObserverForTest } from "../state/uiSceneAtoms";
-import type { SiteDataTaskProgress } from "../shared/types";
-import { eventHappenedInside } from "./FriendsApp";
+import type { AppState, SiteDataTaskProgress } from "../shared/types";
+import { eventHappenedInside, isLinuxDoActivityHref, shouldHandleActivityLinkClick } from "./FriendsApp";
 import { FriendsApp } from "./FriendsApp";
 
 describe("eventHappenedInside", () => {
@@ -53,6 +53,47 @@ describe("eventHappenedInside", () => {
     Object.defineProperty(event, "composedPath", { value: () => [outside, document.body, document] });
 
     expect(eventHappenedInside(event, popover)).toBe(false);
+  });
+});
+
+describe("activity link click handling", () => {
+  it("handles only plain primary-button clicks", () => {
+    expect(
+      shouldHandleActivityLinkClick({
+        button: 0,
+        defaultPrevented: false,
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false
+      } as React.MouseEvent<HTMLAnchorElement>)
+    ).toBe(true);
+    expect(
+      shouldHandleActivityLinkClick({
+        button: 0,
+        defaultPrevented: false,
+        metaKey: true,
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false
+      } as React.MouseEvent<HTMLAnchorElement>)
+    ).toBe(false);
+    expect(
+      shouldHandleActivityLinkClick({
+        button: 1,
+        defaultPrevented: false,
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false
+      } as React.MouseEvent<HTMLAnchorElement>)
+    ).toBe(false);
+  });
+
+  it("recognizes only linux.do activity hrefs for interception", () => {
+    expect(isLinuxDoActivityHref("https://linux.do/t/topic/1")).toBe(true);
+    expect(isLinuxDoActivityHref("/t/topic/1")).toBe(true);
+    expect(isLinuxDoActivityHref("https://example.com/t/topic/1")).toBe(false);
   });
 });
 
@@ -122,6 +163,37 @@ describe("FriendsApp UI scene persistence", () => {
     });
   });
 
+  it("backfills observed app-state settings from storage changes", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.tab]: "feed"
+    });
+    const chromeMock = setupChrome({ session, state: activityFeedState() });
+    const { container } = await renderFriendsApp();
+
+    await act(async () => {
+      chromeMock.emitStorageChange(
+        {
+          linuxdoFriendsState: {
+            oldValue: null,
+            newValue: {
+              ...activityFeedState(),
+              settings: { refreshIntervalMinutes: 90 }
+            }
+          }
+        },
+        "local"
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLAnchorElement>(".kind-card.kind-topic")?.click();
+    });
+
+    expect(chromeMock.sendMessage).not.toHaveBeenCalledWith({ type: "openActivityLink", url: "https://linux.do/t/topic/1" });
+  });
+
   it("renders reply activity kind cards as narrow stacked controls", async () => {
     const session = createMockStorage({
       [uiSceneStorageKeys.version]: 1,
@@ -169,6 +241,65 @@ describe("FriendsApp UI scene persistence", () => {
     expect(kindCard?.querySelector(".kind-card-label")?.textContent).toBe("回复");
     expect(kindCard?.querySelector(".kind-card-floor")?.textContent).toBe("#3");
     expect(kindCard?.querySelector(".kind-card-link svg")).toBeTruthy();
+  });
+
+  it("keeps feed activity links as normal new-tab anchors by default", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.tab]: "feed"
+    });
+    const chromeMock = setupChrome({ session, state: activityFeedState() });
+    const { container } = await renderFriendsApp();
+    const link = container.querySelector<HTMLAnchorElement>(".feed-title");
+
+    await act(async () => {
+      link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+    });
+
+    expect(link?.target).toBe("_blank");
+    expect(chromeMock.sendMessage).not.toHaveBeenCalledWith({ type: "openActivityLink", url: "https://linux.do/t/topic/1" });
+  });
+
+  it("opens feed activity links through the background command when in-page navigation is enabled", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.tab]: "feed"
+    });
+    const chromeMock = setupChrome({
+      session,
+      state: {
+        ...activityFeedState(),
+        settings: { ...defaultAppState.settings, openActivityLinksInPage: true }
+      }
+    });
+    const { container } = await renderFriendsApp();
+
+    await act(async () => {
+      container.querySelector<HTMLAnchorElement>(".kind-card.kind-topic")?.click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "openActivityLink", url: "https://linux.do/t/topic/1" });
+  });
+
+  it("does not intercept external feed links even when in-page navigation is enabled", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.tab]: "feed"
+    });
+    const chromeMock = setupChrome({
+      session,
+      state: {
+        ...activityFeedState("https://example.com/t/topic/1"),
+        settings: { ...defaultAppState.settings, openActivityLinksInPage: true }
+      }
+    });
+    const { container } = await renderFriendsApp();
+
+    await act(async () => {
+      container.querySelector<HTMLAnchorElement>(".kind-card.kind-topic")?.click();
+    });
+
+    expect(chromeMock.sendMessage).not.toHaveBeenCalledWith({ type: "openActivityLink", url: "https://example.com/t/topic/1" });
   });
 
   it("shows running refresh progress in the in-page friends view", async () => {
@@ -258,6 +389,85 @@ describe("FriendsApp UI scene persistence", () => {
       enabled: true,
       intervalMinutes: 1
     });
+  });
+
+  it("shows an auto-refresh countdown without request progress while waiting", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-28T00:00:00.000Z"));
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({ session });
+    const { container } = await renderFriendsApp("side-panel");
+
+    await enableAutoRefreshForTest({
+      chromeMock,
+      session,
+      intervalMinutes: 1,
+      lastFinishedAt: "2026-06-28T00:00:00.000Z"
+    });
+
+    expect(container.querySelector(".refresh-button-inner.is-scheduled")).toBeTruthy();
+    expect(container.querySelector(".auto-refresh-wait-icon")).toBeTruthy();
+    expect(container.querySelector(".refresh-button-meta")?.textContent).toBe("下次刷新 01:00");
+    expect(container.querySelector(".refresh-progress-track span")).toBeFalsy();
+    expect(container.querySelector(".spin-icon")).toBeFalsy();
+    vi.useRealTimers();
+  });
+
+  it("updates the auto-refresh countdown while the UI stays open", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-28T00:00:00.000Z"));
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({ session });
+    const { container } = await renderFriendsApp("side-panel");
+
+    await enableAutoRefreshForTest({
+      chromeMock,
+      session,
+      intervalMinutes: 1,
+      lastFinishedAt: "2026-06-28T00:00:00.000Z"
+    });
+
+    expect(container.querySelector(".refresh-button-meta")?.textContent).toBe("下次刷新 01:00");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(container.querySelector(".refresh-button-meta")?.textContent).toBe("下次刷新 00:59");
+    vi.useRealTimers();
+  });
+
+  it("lets real profile refresh progress override the auto-refresh countdown", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-28T00:00:00.000Z"));
+    const runningProfiles: SiteDataTaskProgress = {
+      taskId: "profiles-live",
+      taskType: "profiles",
+      usernames: ["neo"],
+      status: "running",
+      completed: 0,
+      total: 1,
+      currentLabel: "@neo",
+      startedAt: "2026-06-28T00:00:00.000Z",
+      updatedAt: "2026-06-28T00:00:00.000Z"
+    };
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({ session, progress: runningProfiles });
+    const { container } = await renderFriendsApp("side-panel");
+
+    await enableAutoRefreshForTest({
+      chromeMock,
+      session,
+      intervalMinutes: 1,
+      lastFinishedAt: "2026-06-28T00:00:00.000Z"
+    });
+
+    expect(container.querySelector(".refresh-button-inner.is-running")).toBeTruthy();
+    expect(container.querySelector(".refresh-button-inner.is-scheduled")).toBeFalsy();
+    expect(container.querySelector(".refresh-button-label")?.textContent).toBe("@neo");
+    expect(container.querySelector(".refresh-button-meta")).toBeFalsy();
+    expect(container.querySelector(".refresh-progress-track span")).toBeTruthy();
+    expect(container.querySelector(".spin-icon")).toBeTruthy();
+    vi.useRealTimers();
   });
 
   it("does not duplicate auto-refresh requests across two mounted surfaces", async () => {
@@ -602,10 +812,15 @@ describe("FriendsApp UI scene persistence", () => {
     });
     const { container } = await renderFriendsApp("side-panel");
 
-    expect(container.querySelector(".scope-select-trigger")?.textContent).toContain("回复 / Boost");
+    const trigger = container.querySelector<HTMLButtonElement>(".scope-select-trigger");
+    expect(trigger?.getAttribute("aria-label")).toBe("视奸范围：回复 / Boost");
+    expect(container.querySelector(".scope-trigger-icon.kind-reply")).toBeTruthy();
+    expect(container.querySelector(".scope-trigger-icon.kind-boost")).toBeTruthy();
+    expect(container.querySelector(".scope-trigger-icon.kind-topic")).toBeFalsy();
+    expect(container.querySelector(".scope-trigger-icon.kind-reaction")).toBeFalsy();
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>(".scope-select-trigger")?.click();
+      trigger?.click();
     });
     await act(async () => {
       const replyOption = Array.from(container.querySelectorAll<HTMLButtonElement>(".scope-select-menu button")).find((button) =>
@@ -619,6 +834,30 @@ describe("FriendsApp UI scene persistence", () => {
       username: "neo",
       patch: { activityKinds: ["boost"] }
     });
+  });
+
+  it("renders an empty activity scope as a compact none state", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.addFriendModalOpen]: true
+    });
+    setupChrome({
+      session,
+      state: updateFriend(
+        addFriendFromProfile(defaultAppState, {
+          username: "Neo",
+          name: "Neo",
+          refreshedAt: "2026-06-28T00:00:00.000Z"
+        }),
+        "neo",
+        { activityKinds: [] }
+      )
+    });
+    const { container } = await renderFriendsApp("side-panel");
+
+    expect(container.querySelector<HTMLButtonElement>(".scope-select-trigger")?.getAttribute("aria-label")).toBe("视奸范围：无");
+    expect(container.querySelector(".scope-trigger-empty")?.textContent).toBe("无");
+    expect(container.querySelector(".scope-trigger-icon")).toBeFalsy();
   });
 
   it("shows effective request counts in the activity type selector", async () => {
@@ -908,8 +1147,81 @@ function setupChrome({
   };
 }
 
+async function enableAutoRefreshForTest({
+  chromeMock,
+  intervalMinutes,
+  lastFinishedAt,
+  session
+}: {
+  chromeMock: ReturnType<typeof setupChrome>;
+  intervalMinutes: 1 | 10 | 30;
+  lastFinishedAt: string;
+  session: ReturnType<typeof createMockStorage>;
+}) {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  const registeredSession = await loadAutoRefreshSessionState(session);
+  await session.set({
+    [AUTO_REFRESH_SESSION_STORAGE_KEY]: {
+      ...registeredSession,
+      enabled: true,
+      intervalMinutes,
+      lastFinishedAt,
+      updatedAt: lastFinishedAt
+    }
+  });
+  const enabledSession = session.dump()[AUTO_REFRESH_SESSION_STORAGE_KEY];
+  await act(async () => {
+    chromeMock.emitStorageChange(
+      {
+        [AUTO_REFRESH_SESSION_STORAGE_KEY]: {
+          oldValue: null,
+          newValue: enabledSession
+        }
+      },
+      "session"
+    );
+    await Promise.resolve();
+  });
+}
+
 function getButton(container: HTMLElement, text: string) {
   const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes(text));
   if (!button) throw new Error(`Button not found: ${text}`);
   return button;
+}
+
+function activityFeedState(url = "/t/topic/1"): AppState {
+  return {
+    ...defaultAppState,
+    friends: {
+      neo: {
+        username: "neo",
+        note: "",
+        groups: [],
+        pinned: false,
+        activityKinds: ["topic", "reply", "boost", "reaction"],
+        upgradedAt: "2026-06-28T00:00:00.000Z",
+        updatedAt: "2026-06-28T00:00:00.000Z"
+      }
+    },
+    activity: {
+      neo: {
+        username: "neo",
+        refreshedAt: "2026-06-28T00:05:00.000Z",
+        items: [
+          {
+            id: "topic:neo:1",
+            username: "neo",
+            kind: "topic" as const,
+            title: "新话题",
+            url,
+            occurredAt: "2026-06-28T00:04:00.000Z"
+          }
+        ]
+      }
+    }
+  };
 }

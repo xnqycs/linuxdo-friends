@@ -51,6 +51,7 @@ import {
   observeSiteDataProgressAtom,
   observeUpdateCheckAtom,
   openLinuxDoHomeAtom,
+  openActivityLinkAtom,
   openOptionsPageAtom,
   openSidePanelAtom,
   pageScriptStatusAtom,
@@ -112,8 +113,14 @@ type FilterOption<T extends string> = {
 };
 
 const RELATIVE_TIME_TICK_MS = 30_000;
+const AUTO_REFRESH_COUNTDOWN_TICK_MS = 1_000;
 const FEED_SCROLL_TOP_GAP = 8;
 const AvatarImageContext = React.createContext(false);
+
+type AutoRefreshCountdownSchedule = {
+  dueAt: number;
+  intervalMinutes: FriendStatusAutoRefreshIntervalMinutes;
+};
 
 const activityKindOptions: Array<FilterOption<ActivityKindFilter>> = [
   { value: "all", label: "全部", icon: <Sparkles size={15} aria-hidden="true" /> },
@@ -190,6 +197,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const cacheAvatars = useSetAtom(cacheAvatarsAtom);
   const identifyCurrentAccount = useSetAtom(identifyCurrentAccountAtom);
   const openLinuxDoHome = useSetAtom(openLinuxDoHomeAtom);
+  const openActivityLink = useSetAtom(openActivityLinkAtom);
   const openOptionsPage = useSetAtom(openOptionsPageAtom);
   const openSidePanel = useSetAtom(openSidePanelAtom);
   const removeFriend = useSetAtom(removeFriendAtom);
@@ -323,6 +331,12 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
     clearStatus();
   }
 
+  function handleActivityLinkClick(event: React.MouseEvent<HTMLAnchorElement>, href: string) {
+    if (!state.settings.openActivityLinksInPage || !shouldHandleActivityLinkClick(event) || !isLinuxDoActivityHref(href)) return;
+    event.preventDefault();
+    void openActivityLink(href);
+  }
+
   const statusAction = status ? repairActionForStatus(status, repairLinuxDoPageScript, openLinuxDoHome) : null;
 
   return (
@@ -409,6 +423,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
           onRefresh={() => void refreshFriendActivity(activityRefreshScope)}
           onOpenOptions={() => void openOptionsPage()}
           onKindFilterChange={(value) => void updateUiScene({ feedKindFilter: value })}
+          onOpenActivityLink={handleActivityLinkClick}
           onUserFilterChange={(value) => void updateUiScene({ feedUserFilter: value })}
           onActivityKindPopoverChange={(activityKindPopover) => void updateUiScene({ activityKindPopover })}
           onFeedUserPopoverChange={(feedUserPopover) => void updateUiScene({ feedUserPopover })}
@@ -475,6 +490,7 @@ function FriendListTab({
   refreshDisabled: boolean;
 }) {
   const profileProgress = progress?.taskType === "profiles" ? progress : null;
+  const countdown = deriveAutoRefreshCountdown(autoRefresh, now, friends.length > 0);
   return (
     <section>
       <div className="tab-action-row">
@@ -489,6 +505,7 @@ function FriendListTab({
           onRefresh={onRefresh}
           progress={profileProgress}
           progressMatches
+          scheduledMeta={countdown}
           warning="自动刷新会按间隔请求所有佬相好状态；遇到验证、限流或正在刷新会跳过。"
         />
         <button className="manage-button" onClick={onOpenModal} disabled={loading} type="button">
@@ -539,6 +556,7 @@ function FeedTab({
   onActivityKindPopoverChange,
   onFeedUserPopoverChange,
   onKindFilterChange,
+  onOpenActivityLink,
   onUserFilterChange,
   progress,
   refreshDisabled,
@@ -560,6 +578,7 @@ function FeedTab({
   onActivityKindPopoverChange: (scene: { open?: boolean; query?: string }) => void;
   onFeedUserPopoverChange: (scene: { open?: boolean; query?: string }) => void;
   onKindFilterChange: (value: ActivityKindFilter) => void;
+  onOpenActivityLink: (event: React.MouseEvent<HTMLAnchorElement>, href: string) => void;
   onUserFilterChange: (value: "all" | Username) => void;
   progress: SiteDataTaskProgress | null;
   refreshDisabled: boolean;
@@ -694,7 +713,7 @@ function FeedTab({
             entry.type === "waterline" ? (
               <FeedWaterline key={entry.id} onBackToTop={scrollFeedToTop} />
             ) : (
-              <FeedActivityCard item={entry.item} key={entry.item.id} now={now} state={state} />
+              <FeedActivityCard item={entry.item} key={entry.item.id} now={now} onOpenActivityLink={onOpenActivityLink} state={state} />
             )
           )}
         </div>
@@ -714,6 +733,7 @@ function SplitRefreshButton({
   onRefresh,
   progress,
   progressMatches,
+  scheduledMeta,
   warning
 }: {
   autoRefresh: FriendStatusAutoRefreshSession;
@@ -726,6 +746,7 @@ function SplitRefreshButton({
   onRefresh: () => void;
   progress: SiteDataTaskProgress | null;
   progressMatches: boolean;
+  scheduledMeta?: AutoRefreshCountdownSchedule;
   warning: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -759,6 +780,7 @@ function SplitRefreshButton({
           progress={progress}
           progressMatches={progressMatches}
           freshness={freshness}
+          scheduledMeta={scheduledMeta}
         />
       </button>
       <button
@@ -878,10 +900,12 @@ function useFriendStatusAutoRefresh({
 function FeedActivityCard({
   item,
   now,
+  onOpenActivityLink,
   state
 }: {
   item: ActivityItem;
   now: number;
+  onOpenActivityLink: (event: React.MouseEvent<HTMLAnchorElement>, href: string) => void;
   state: Parameters<typeof identityForActivityItem>[0];
 }) {
   return (
@@ -893,7 +917,7 @@ function FeedActivityCard({
           <time dateTime={item.occurredAt}>{formatRelativeTime(item.occurredAt, now)}</time>
         </div>
       </div>
-      <ActivityCardBody item={item} />
+      <ActivityCardBody item={item} onOpenActivityLink={onOpenActivityLink} />
     </article>
   );
 }
@@ -916,7 +940,8 @@ function RefreshButtonContent({
   idleMetaMode,
   now,
   progress,
-  progressMatches
+  progressMatches,
+  scheduledMeta
 }: {
   freshness: { label: string; refreshedAt?: string };
   idleLabel: string;
@@ -924,26 +949,45 @@ function RefreshButtonContent({
   now: number;
   progress: SiteDataTaskProgress | null;
   progressMatches: boolean;
+  scheduledMeta?: AutoRefreshCountdownSchedule;
 }) {
+  const [countdownNow, setCountdownNow] = useState(now);
   const visibleProgress = progress && progress.status === "running" && progressMatches ? progress : null;
+  const visibleSchedule = !visibleProgress ? scheduledMeta : undefined;
+  const renderNow = visibleSchedule ? countdownNow : now;
+  useEffect(() => {
+    setCountdownNow(now);
+  }, [now]);
+  useEffect(() => {
+    if (!visibleSchedule) return;
+    const interval = window.setInterval(() => setCountdownNow(Date.now()), AUTO_REFRESH_COUNTDOWN_TICK_MS);
+    return () => window.clearInterval(interval);
+  }, [visibleSchedule]);
   const percent = visibleProgress?.total ? Math.round((visibleProgress.completed / visibleProgress.total) * 100) : 0;
   const idleMeta =
     idleMetaMode === "hidden"
       ? ""
       : freshness.refreshedAt
-        ? `${formatRelativeTime(freshness.refreshedAt, now)}已刷新`
+        ? `${formatRelativeTime(freshness.refreshedAt, renderNow)}已刷新`
         : freshness.label;
   const progressText = visibleProgress ? (visibleProgress.currentLabel ?? idleLabel) : idleLabel;
-  const metaText = visibleProgress ? "" : idleMeta;
+  const scheduleMeta = visibleSchedule ? deriveAutoRefreshCountdownText(visibleSchedule, renderNow) : undefined;
+  const metaText = visibleProgress ? "" : scheduleMeta?.label ?? idleMeta;
   const titleText = visibleProgress
     ? progressText
+    : scheduleMeta
+      ? scheduleMeta.title
     : freshness.refreshedAt
-      ? `${freshness.label}，${formatRelativeTime(freshness.refreshedAt, now)}已刷新`
+      ? `${freshness.label}，${formatRelativeTime(freshness.refreshedAt, renderNow)}已刷新`
       : freshness.label;
   return (
-    <span className={`refresh-button-inner${visibleProgress ? " is-running" : ""}${metaText ? " has-meta" : ""}`}>
+    <span className={`refresh-button-inner${visibleProgress ? " is-running" : ""}${visibleSchedule ? " is-scheduled" : ""}${metaText ? " has-meta" : ""}`}>
       <span className="refresh-icon-pane" aria-hidden="true">
-        {visibleProgress ? <LoaderCircle className="spin-icon" size={15} aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
+        {visibleProgress ? (
+          <LoaderCircle className="spin-icon" size={15} aria-hidden="true" />
+        ) : (
+          <RefreshCw className={visibleSchedule ? "auto-refresh-wait-icon" : undefined} size={15} aria-hidden="true" />
+        )}
       </span>
       <span className="refresh-button-body">
         <span className="refresh-button-main">
@@ -968,17 +1012,23 @@ function RefreshButtonContent({
   );
 }
 
-function ActivityCardBody({ item }: { item: ActivityItem }) {
+function ActivityCardBody({
+  item,
+  onOpenActivityLink
+}: {
+  item: ActivityItem;
+  onOpenActivityLink: (event: React.MouseEvent<HTMLAnchorElement>, href: string) => void;
+}) {
   const title = item.topicTitle || item.title;
   const href = absoluteLinuxDoUrl(item.url);
-  const kindCard = <ActivityKindCard href={href} item={item} />;
+  const kindCard = <ActivityKindCard href={href} item={item} onOpenActivityLink={onOpenActivityLink} />;
   if (item.kind === "boost") {
     return (
       <div className="feed-main">
         {kindCard}
         <div className="feed-primary-block">
           <p className="feed-primary">{item.boostText || "Boost 了帖子"}</p>
-          <a className="feed-context-link" href={href} target="_blank" rel="noreferrer">
+          <a className="feed-context-link" href={href} target="_blank" rel="noreferrer" onClick={(event) => onOpenActivityLink(event, href)}>
             <ExternalText text={title} />
           </a>
           {item.excerpt ? <p className="feed-excerpt">{item.excerpt}</p> : null}
@@ -992,7 +1042,7 @@ function ActivityCardBody({ item }: { item: ActivityItem }) {
         {kindCard}
         <div className="feed-primary-block">
           <p className="feed-primary">{item.reactionValue ? `回应了 ${item.reactionValue}` : "回应了帖子"}</p>
-          <a className="feed-context-link" href={href} target="_blank" rel="noreferrer">
+          <a className="feed-context-link" href={href} target="_blank" rel="noreferrer" onClick={(event) => onOpenActivityLink(event, href)}>
             <ExternalText text={title} />
           </a>
           {item.excerpt ? <p className="feed-excerpt">{item.excerpt}</p> : null}
@@ -1006,7 +1056,7 @@ function ActivityCardBody({ item }: { item: ActivityItem }) {
         {kindCard}
         <div className="feed-primary-block">
           {item.excerpt ? <p className="feed-primary">{item.excerpt}</p> : <p className="feed-primary">回复了话题</p>}
-          <a className="feed-context-link" href={href} target="_blank" rel="noreferrer">
+          <a className="feed-context-link" href={href} target="_blank" rel="noreferrer" onClick={(event) => onOpenActivityLink(event, href)}>
             <ExternalText text={title} />
           </a>
         </div>
@@ -1017,7 +1067,7 @@ function ActivityCardBody({ item }: { item: ActivityItem }) {
     <div className="feed-main">
       {kindCard}
       <div className="feed-primary-block">
-        <a className="feed-title" href={href} target="_blank" rel="noreferrer">
+        <a className="feed-title" href={href} target="_blank" rel="noreferrer" onClick={(event) => onOpenActivityLink(event, href)}>
           <ExternalText text={title} />
         </a>
         {item.excerpt ? <p className="feed-excerpt">{item.excerpt}</p> : null}
@@ -1026,9 +1076,24 @@ function ActivityCardBody({ item }: { item: ActivityItem }) {
   );
 }
 
-function ActivityKindCard({ href, item }: { href: string; item: ActivityItem }) {
+function ActivityKindCard({
+  href,
+  item,
+  onOpenActivityLink
+}: {
+  href: string;
+  item: ActivityItem;
+  onOpenActivityLink: (event: React.MouseEvent<HTMLAnchorElement>, href: string) => void;
+}) {
   return (
-    <a className={`kind-card kind-${item.kind}`} href={href} target="_blank" rel="noreferrer" title={`打开${kindText(item.kind)}动态`}>
+    <a
+      className={`kind-card kind-${item.kind}`}
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      title={`打开${kindText(item.kind)}动态`}
+      onClick={(event) => onOpenActivityLink(event, href)}
+    >
       <span className="kind-card-icon">{kindIcon(item.kind, 15)}</span>
       <span className="kind-card-label">{kindText(item.kind)}</span>
       {item.kind === "reply" && item.replyToPostNumber ? <span className="kind-card-floor">#{item.replyToPostNumber}</span> : null}
@@ -1125,6 +1190,19 @@ export function eventHappenedInside(event: Event, element: HTMLElement) {
     return path.includes(element);
   }
   return element.contains(event.target as Node | null);
+}
+
+export function shouldHandleActivityLinkClick(event: React.MouseEvent<HTMLAnchorElement>) {
+  return event.button === 0 && !event.defaultPrevented && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+}
+
+export function isLinuxDoActivityHref(href: string) {
+  try {
+    const url = new URL(href, "https://linux.do");
+    return url.protocol === "https:" && url.hostname === "linux.do";
+  } catch {
+    return false;
+  }
 }
 
 function ExternalText({ text }: { text: string }) {
@@ -1403,12 +1481,31 @@ function ActivityScopeSelect({
     onChange(ALL_ACTIVITY_KINDS.filter((item) => item === kind || selectedKinds.includes(item)));
   }
 
+  const triggerLabel = `视奸范围：${scopeSummary(selectedKinds)}`;
+
   return (
     <div className="scope-select" ref={popoverRef}>
-      <button className="scope-select-trigger" type="button" disabled={disabled} onClick={() => setOpen((current) => !current)} aria-expanded={open}>
-        <span>视奸范围</span>
-        <strong>{scopeSummary(selectedKinds)}</strong>
-        <ChevronDown size={13} aria-hidden="true" />
+      <button
+        className="scope-select-trigger"
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        aria-label={triggerLabel}
+        title={triggerLabel}
+      >
+        <span className={`scope-trigger-card${selectedKinds.length === 0 ? " is-empty" : ""}`} aria-hidden="true">
+          {selectedKinds.length === 0 ? (
+            <span className="scope-trigger-empty">无</span>
+          ) : (
+            selectedKinds.map((kind) => (
+              <span className={`scope-trigger-icon kind-${kind}`} key={kind}>
+                {kindIcon(kind, 13)}
+              </span>
+            ))
+          )}
+        </span>
+        <ChevronDown className="scope-trigger-arrow" size={12} aria-hidden="true" />
       </button>
       {open ? (
         <div className="scope-select-menu">
@@ -1430,7 +1527,7 @@ function ActivityScopeSelect({
 
 function scopeSummary(kinds: ActivityRefreshKind[]) {
   if (kinds.length === ALL_ACTIVITY_KINDS.length) return "全部";
-  if (kinds.length === 0) return "不看动态";
+  if (kinds.length === 0) return "无";
   return kinds.map(kindText).join(" / ");
 }
 
@@ -1569,6 +1666,33 @@ function deriveProfileFreshness(friends: ReturnType<typeof deriveFriendList>): {
     label: "状态",
     refreshedAt: timestamps.sort((left, right) => Date.parse(right) - Date.parse(left))[0]
   };
+}
+
+function deriveAutoRefreshCountdown(session: FriendStatusAutoRefreshSession, now: number, hasFriends: boolean): AutoRefreshCountdownSchedule | undefined {
+  if (!session.enabled || !hasFriends) return undefined;
+  const intervalMs = session.intervalMinutes * 60_000;
+  const anchor = Date.parse(session.lastFinishedAt ?? session.enabledAt ?? "");
+  const dueAt = Number.isFinite(anchor) ? anchor + intervalMs : now;
+  return { dueAt, intervalMinutes: session.intervalMinutes };
+}
+
+function deriveAutoRefreshCountdownText(
+  schedule: { dueAt: number; intervalMinutes: FriendStatusAutoRefreshIntervalMinutes },
+  now: number
+) {
+  const remainingMs = Math.max(0, schedule.dueAt - now);
+  const countdown = remainingMs <= 0 ? "即将刷新" : `下次刷新 ${formatCountdown(remainingMs)}`;
+  return {
+    label: countdown,
+    title: `${countdown}，间隔 ${schedule.intervalMinutes} 分钟`
+  };
+}
+
+function formatCountdown(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function absoluteLinuxDoUrl(url?: string) {

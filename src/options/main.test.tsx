@@ -133,6 +133,87 @@ describe("OptionsApp update diagnostics", () => {
     expect(container.textContent).toContain("已导入 1 位佬朋友配置。");
   });
 
+  it("checks cloud config status once on open without restoring config", async () => {
+    const chromeMock = setupChrome({
+      cloudState: {
+        binding: {
+          bound: true,
+          app: "linuxdo-friends",
+          linuxDoId: "42",
+          tokenType: "Bearer",
+          tokenKind: "jwt",
+          boundAt: "2026-06-29T00:00:00.000Z"
+        },
+        status: {
+          state: "remote_config",
+          checkedAt: "2026-06-29T00:01:00.000Z",
+          exportedAt: "2026-06-29T00:00:00.000Z",
+          friendCount: 1
+        },
+        message: "云端配置：1 位佬朋友。"
+      }
+    });
+    const { container } = await renderOptionsApp();
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "getCloudConfigStatus" });
+    expect(chromeMock.sendMessage).not.toHaveBeenCalledWith({ type: "restoreCloudConfig" });
+    expect(container.textContent).toContain("已绑定 linuxdo-cloud-save");
+    expect(container.textContent).toContain("云端配置：1 位佬朋友");
+    expect(container.textContent).toContain("绑定账号 ID：42");
+    expect(container.textContent).not.toContain("chromiumapp.org");
+    expect(container.textContent).not.toContain("secret-token");
+  });
+
+  it("binds and backs up cloud config from the options page", async () => {
+    const chromeMock = setupChrome({ cloudState: { binding: { bound: false }, message: "尚未绑定 linuxdo-cloud-save。" } });
+    const { container } = await renderOptionsApp();
+
+    await act(async () => {
+      getButton(container, "绑定").click();
+    });
+    await act(async () => {
+      getButton(container, "备份到云端").click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "bindCloudSave" });
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "backupCloudConfig" });
+    expect(container.textContent).toContain("已备份 1 位佬朋友到云端。");
+    expect(container.textContent).not.toContain("secret-token");
+  });
+
+  it("restores cloud config only after confirmation", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const chromeMock = setupChrome({ cloudState: boundCloudState() });
+    const { container } = await renderOptionsApp();
+
+    await act(async () => {
+      getButton(container, "从云端恢复").click();
+    });
+
+    expect(confirm).toHaveBeenCalled();
+    expect(chromeMock.sendMessage).not.toHaveBeenCalledWith({ type: "restoreCloudConfig" });
+
+    confirm.mockReturnValue(true);
+    await act(async () => {
+      getButton(container, "从云端恢复").click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "restoreCloudConfig" });
+    expect(container.textContent).toContain("已导入 1 位佬朋友配置。");
+  });
+
+  it("disconnects cloud binding without changing local config UI", async () => {
+    const chromeMock = setupChrome({ cloudState: boundCloudState() });
+    const { container } = await renderOptionsApp();
+
+    await act(async () => {
+      getButton(container, "断开绑定").click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "clearCloudBinding" });
+    expect(container.textContent).toContain("已断开云存档绑定。");
+  });
+
   it("shows the feed background refresh placeholder without enabling durable auto refresh", async () => {
     const { container } = await renderOptionsApp();
 
@@ -141,6 +222,21 @@ describe("OptionsApp update diagnostics", () => {
     expect(container.textContent).toContain("规则匹配");
     expect(container.textContent).toContain("本版本只保留入口");
     expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
+  });
+
+  it("updates the activity navigation setting from the options page", async () => {
+    const chromeMock = setupChrome();
+    const { container } = await renderOptionsApp();
+    const toggle = inputByLabelText(container, "在当前 linux.do 页面内打开动态");
+
+    await act(async () => {
+      toggle.click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({
+      type: "updateSettings",
+      settings: { openActivityLinksInPage: true }
+    });
   });
 });
 
@@ -165,7 +261,8 @@ function setupChrome({
     latestVersion: "1.0.0",
     checkedAt: "2026-06-28T00:00:00.000Z",
     source: "github_release" as const
-  }
+  },
+  cloudState = { binding: { bound: false as const }, status: { state: "unchecked" as const }, message: "尚未绑定 linuxdo-cloud-save。" }
 }: {
   updateCheck?: {
     installedVersion: string;
@@ -176,6 +273,7 @@ function setupChrome({
     error?: string;
     source?: "github_release";
   };
+  cloudState?: Record<string, unknown>;
 } = {}) {
   const storageListeners: Array<(changes: Record<string, chrome.storage.StorageChange>, areaName: string) => void> = [];
   const sendMessage = vi.fn(async (message) => {
@@ -234,6 +332,43 @@ function setupChrome({
         }
       };
     }
+    if (message.type === "getCloudConfigStatus") return { ok: true, data: cloudState };
+    if (message.type === "bindCloudSave") return { ok: true, data: boundCloudState("已绑定 linuxdo-cloud-save。") };
+    if (message.type === "backupCloudConfig") {
+      return {
+        ok: true,
+        data: {
+          ...boundCloudState("已备份 1 位佬朋友到云端。"),
+          status: { state: "remote_config", checkedAt: "2026-06-29T00:02:00.000Z", exportedAt: "2026-06-29T00:00:00.000Z", friendCount: 1 }
+        }
+      };
+    }
+    if (message.type === "restoreCloudConfig") {
+      return {
+        ok: true,
+        data: {
+          ...boundCloudState("已导入 1 位佬朋友配置。"),
+          state: {
+            ...defaultAppState,
+            friends: {
+              neo: {
+                username: "neo",
+                note: "",
+                groups: [],
+                pinned: false,
+                activityKinds: ["topic", "reply", "boost", "reaction"],
+                upgradedAt: "2026-06-29T00:00:00.000Z",
+                updatedAt: "2026-06-29T00:00:00.000Z"
+              }
+            },
+            lastSync: { ok: true, source: "manual", message: "已导入 1 位佬朋友配置。", refreshedAt: "2026-06-29T00:00:00.000Z" }
+          }
+        }
+      };
+    }
+    if (message.type === "clearCloudBinding") {
+      return { ok: true, data: { binding: { bound: false }, message: "已断开云存档绑定。" } };
+    }
     return { ok: false, error: "unexpected command" };
   });
   vi.stubGlobal("chrome", {
@@ -255,6 +390,35 @@ function setupChrome({
     emitStorageChange(changes: Record<string, chrome.storage.StorageChange>, areaName = "local") {
       for (const listener of storageListeners) listener(changes, areaName);
     }
+  };
+}
+
+function inputByLabelText(container: HTMLElement, text: string): HTMLInputElement {
+  const label = Array.from(container.querySelectorAll("label")).find((candidate) => candidate.textContent?.includes(text));
+  const input = label?.querySelector<HTMLInputElement>("input");
+  if (!input) throw new Error(`input not found: ${text}`);
+  return input;
+}
+
+function boundCloudState(message = "云端配置：1 位佬朋友。") {
+  return {
+    binding: {
+      bound: true,
+      app: "linuxdo-friends",
+      linuxDoId: "42",
+      tokenType: "Bearer",
+      tokenKind: "jwt",
+      boundAt: "2026-06-29T00:00:00.000Z",
+      lastBackupAt: "2026-06-29T00:02:00.000Z",
+      lastRestoreAt: "2026-06-29T00:03:00.000Z"
+    },
+    status: {
+      state: "remote_config",
+      checkedAt: "2026-06-29T00:01:00.000Z",
+      exportedAt: "2026-06-29T00:00:00.000Z",
+      friendCount: 1
+    },
+    message
   };
 }
 

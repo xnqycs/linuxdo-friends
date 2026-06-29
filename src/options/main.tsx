@@ -16,6 +16,15 @@ import {
 } from "../state/atoms";
 import { sendCommand } from "../messages/client";
 import { VersionBadge, VersionDiagnostics } from "../app/VersionStatus";
+import type {
+  CloudConfigBackupResult,
+  CloudConfigBindResult,
+  CloudConfigClearBindingResult,
+  CloudConfigRestoreResult,
+  CloudConfigStatus,
+  CloudConfigStatusResult,
+  CloudConfigViewState
+} from "../shared/types";
 import "../styles/app.css";
 
 export function OptionsApp() {
@@ -32,6 +41,9 @@ export function OptionsApp() {
   const resetExtension = useSetAtom(resetExtensionAtom);
   const [relativeNow, setRelativeNow] = useState(() => Date.now());
   const [configMessage, setConfigMessage] = useState<string | null>(null);
+  const [cloudState, setCloudState] = useState<CloudConfigViewState | null>(null);
+  const [cloudBusy, setCloudBusy] = useState<"bind" | "status" | "backup" | "restore" | "clear" | null>(null);
+  const [cloudMessage, setCloudMessage] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -45,6 +57,10 @@ export function OptionsApp() {
       window.clearInterval(interval);
     };
   }, [checkForUpdates, loadState, loadUpdateCheck, observeUpdateCheck]);
+
+  useEffect(() => {
+    void refreshCloudStatus({ silent: true });
+  }, []);
 
   async function updateSettings(patch: Partial<typeof state.settings>) {
     const response = await sendCommand<typeof state>({ type: "updateSettings", settings: patch });
@@ -91,6 +107,68 @@ export function OptionsApp() {
     } finally {
       if (importInputRef.current) importInputRef.current.value = "";
     }
+  }
+
+  async function refreshCloudStatus(options: { silent?: boolean } = {}) {
+    if (!options.silent) setCloudBusy("status");
+    const response = await sendCommand<CloudConfigStatusResult>({ type: "getCloudConfigStatus" });
+    if (response.ok) {
+      setCloudState(response.data);
+      if (!options.silent) setCloudMessage(response.data.message);
+    } else if (!options.silent) {
+      setCloudMessage(response.error);
+    }
+    if (!options.silent) setCloudBusy(null);
+  }
+
+  async function handleBindCloudSave() {
+    setCloudBusy("bind");
+    const response = await sendCommand<CloudConfigBindResult>({ type: "bindCloudSave" });
+    if (response.ok) {
+      setCloudState(response.data);
+      setCloudMessage(response.data.message);
+    } else {
+      setCloudMessage(response.error);
+    }
+    setCloudBusy(null);
+  }
+
+  async function handleBackupCloudConfig() {
+    setCloudBusy("backup");
+    const response = await sendCommand<CloudConfigBackupResult>({ type: "backupCloudConfig" });
+    if (response.ok) {
+      setCloudState(response.data);
+      setCloudMessage(response.data.message);
+    } else {
+      setCloudMessage(response.error);
+    }
+    setCloudBusy(null);
+  }
+
+  async function handleRestoreCloudConfig() {
+    if (!window.confirm("确认从云端恢复配置？这会替换当前佬朋友和刷新设置，并清空本地缓存。")) return;
+    setCloudBusy("restore");
+    const response = await sendCommand<CloudConfigRestoreResult>({ type: "restoreCloudConfig" });
+    if (response.ok) {
+      setCloudState(response.data);
+      if (response.data.state) setState(response.data.state);
+      setCloudMessage(response.data.message);
+    } else {
+      setCloudMessage(response.error);
+    }
+    setCloudBusy(null);
+  }
+
+  async function handleClearCloudBinding() {
+    setCloudBusy("clear");
+    const response = await sendCommand<CloudConfigClearBindingResult>({ type: "clearCloudBinding" });
+    if (response.ok) {
+      setCloudState(response.data);
+      setCloudMessage(response.data.message);
+    } else {
+      setCloudMessage(response.error);
+    }
+    setCloudBusy(null);
   }
 
   return (
@@ -147,6 +225,17 @@ export function OptionsApp() {
               onChange={(event) => void updateSettings({ refreshIntervalMinutes: Number(event.target.value) })}
             />
           </label>
+          <div className="settings-divider" />
+          <h3>动态跳转</h3>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={state.settings.openActivityLinksInPage}
+              onChange={(event) => void updateSettings({ openActivityLinksInPage: event.target.checked })}
+            />
+            <span>在当前 linux.do 页面内打开动态</span>
+          </label>
+          <p className="settings-meta">开启后，当前激活标签页是 linux.do 时在该页内跳转；否则仍打开新标签。</p>
         </div>
       </section>
 
@@ -185,6 +274,60 @@ export function OptionsApp() {
         {configMessage ? <p className="settings-meta">{configMessage}</p> : null}
       </section>
 
+      <section className="panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>云端备份</h2>
+            <p className="panel-subtitle">{cloudBindingText(cloudState)}</p>
+          </div>
+          <div className="maintenance-actions">
+            <button className="small-action" type="button" disabled={cloudBusy != null} onClick={() => void handleBindCloudSave()}>
+              {cloudBusy === "bind" ? "绑定中" : cloudState?.binding.bound ? "重新绑定" : "绑定"}
+            </button>
+            <button className="small-action" type="button" disabled={cloudBusy != null} onClick={() => void refreshCloudStatus()}>
+              {cloudBusy === "status" ? "检查中" : "检查云端"}
+            </button>
+            <button
+              className="small-action"
+              type="button"
+              disabled={cloudBusy != null || cloudState?.binding.bound !== true}
+              onClick={() => void handleBackupCloudConfig()}
+            >
+              {cloudBusy === "backup" ? "备份中" : "备份到云端"}
+            </button>
+            <button
+              className="small-action"
+              type="button"
+              disabled={cloudBusy != null || cloudState?.binding.bound !== true}
+              onClick={() => void handleRestoreCloudConfig()}
+            >
+              {cloudBusy === "restore" ? "恢复中" : "从云端恢复"}
+            </button>
+            <button
+              className="small-action danger-action"
+              type="button"
+              disabled={cloudBusy != null || cloudState?.binding.bound !== true}
+              onClick={() => void handleClearCloudBinding()}
+            >
+              断开绑定
+            </button>
+          </div>
+        </div>
+        <p className="settings-meta">{cloudStatusText(cloudState?.status)}</p>
+        {cloudState?.binding.bound ? (
+          <p className="settings-meta">
+            绑定账号 ID：{cloudState.binding.linuxDoId}；绑定时间：{new Date(cloudState.binding.boundAt).toLocaleString()}
+          </p>
+        ) : null}
+        {cloudState?.binding.bound && cloudState.binding.lastBackupAt ? (
+          <p className="settings-meta">上次备份：{new Date(cloudState.binding.lastBackupAt).toLocaleString()}</p>
+        ) : null}
+        {cloudState?.binding.bound && cloudState.binding.lastRestoreAt ? (
+          <p className="settings-meta">上次恢复：{new Date(cloudState.binding.lastRestoreAt).toLocaleString()}</p>
+        ) : null}
+        {cloudMessage ? <p className="settings-meta">{cloudMessage}</p> : null}
+      </section>
+
       <section className="panel danger-panel">
         <div className="panel-title-row">
           <div>
@@ -219,6 +362,21 @@ function downloadJson(data: unknown, filename: string) {
 
 function configFileName(exportedAt: string) {
   return `linuxdo-friends-config-${exportedAt.replace(/[:.]/g, "-")}.json`;
+}
+
+function cloudBindingText(state: CloudConfigViewState | null): string {
+  if (!state) return "正在检查 linuxdo-cloud-save 绑定状态。";
+  if (!state.binding.bound) return "尚未绑定 linuxdo-cloud-save。";
+  return "已绑定 linuxdo-cloud-save。";
+}
+
+function cloudStatusText(status: CloudConfigStatus | undefined): string {
+  if (!status || status.state === "unchecked") return "云端配置尚未检查。";
+  if (status.state === "remote_config") {
+    const exportedAt = status.exportedAt ? new Date(status.exportedAt).toLocaleString() : "未知时间";
+    return `云端配置：${status.friendCount ?? 0} 位佬朋友，导出于 ${exportedAt}。`;
+  }
+  return status.message ?? "云端配置状态未知。";
 }
 
 const rootElement = document.getElementById("root");

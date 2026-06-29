@@ -27,7 +27,20 @@ describe("storage migration", () => {
       activityRefreshLedger: {},
       activityWatermarks: {},
       activityFeedWaterlineAt: undefined,
-      avatarCache: {}
+      avatarCache: {},
+      settings: { openActivityLinksInPage: false }
+    });
+  });
+
+  it("preserves the activity in-page navigation setting", async () => {
+    const storage = createMockStorage({
+      linuxdoFriendsState: {
+        settings: { refreshIntervalMinutes: 90, openActivityLinksInPage: true }
+      }
+    });
+
+    await expect(loadState(storage)).resolves.toMatchObject({
+      settings: { refreshIntervalMinutes: 90, openActivityLinksInPage: true }
     });
   });
 

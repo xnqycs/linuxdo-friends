@@ -18,15 +18,26 @@ describe("extension manifest safety", () => {
         matches: ["https://linux.do/*"],
         js: ["content-script.js"],
         run_at: "document_idle"
+      },
+      {
+        matches: ["https://linuxdo-cloud-save.lafish.workers.dev/auth/complete/browser_code*"],
+        js: ["cloud-save-complete.js"],
+        run_at: "document_idle"
       }
     ]);
-    expect(manifest.host_permissions).toEqual(["https://api.github.com/*", "https://github-api.lafish.workers.dev/*", "https://linux.do/*"]);
+    expect(manifest.host_permissions).toEqual([
+      "https://api.github.com/*",
+      "https://github-api.lafish.workers.dev/*",
+      "https://linuxdo-cloud-save.lafish.workers.dev/*",
+      "https://linux.do/*"
+    ]);
   });
 
   it("does not request continuous polling, cookie, proxy, or external messaging surfaces", () => {
     expect(manifest.permissions).toEqual(["storage", "tabs", "sidePanel"]);
     expect(manifest.permissions).not.toContain("alarms");
     expect(manifest.permissions).not.toContain("cookies");
+    expect(manifest.permissions).not.toContain("identity");
     expect(manifest.permissions).not.toContain("proxy");
     expect(manifest.permissions).not.toContain("webRequest");
     expect(manifest.permissions).not.toContain("declarativeNetRequest");

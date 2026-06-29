@@ -4,6 +4,7 @@ import { addFriendFromProfile, updateFriend, upsertFollowedUser } from "../domai
 import { isBackgroundCommand } from "../messages/contracts";
 import { PAGE_SCRIPT_STATUS_STORAGE_KEY } from "../storage/pageScriptStatusStorage";
 import { SITE_DATA_PROGRESS_STORAGE_KEY } from "../storage/siteDataProgressStorage";
+import { CLOUD_AUTH_STORAGE_KEY } from "../storage/cloudAuthStorage";
 import { createMockStorage } from "../test/mockStorage";
 
 describe("message contracts", () => {
@@ -35,10 +36,18 @@ describe("message contracts", () => {
     expect(isBackgroundCommand({ type: "getUpdateCheck" })).toBe(true);
     expect(isBackgroundCommand({ type: "checkForUpdates" })).toBe(true);
     expect(isBackgroundCommand({ type: "checkForUpdates", force: true })).toBe(true);
+    expect(isBackgroundCommand({ type: "getCloudConfigStatus" })).toBe(true);
+    expect(isBackgroundCommand({ type: "bindCloudSave" })).toBe(true);
+    expect(isBackgroundCommand({ type: "cloudSaveExchangeCode", code: "code-1" })).toBe(true);
+    expect(isBackgroundCommand({ type: "backupCloudConfig" })).toBe(true);
+    expect(isBackgroundCommand({ type: "restoreCloudConfig" })).toBe(true);
+    expect(isBackgroundCommand({ type: "clearCloudBinding" })).toBe(true);
     expect(isBackgroundCommand({ type: "repairLinuxDoPageScript", tabId: 123 })).toBe(true);
     expect(isBackgroundCommand({ type: "openSidePanel" })).toBe(true);
     expect(isBackgroundCommand({ type: "openOptionsPage" })).toBe(true);
     expect(isBackgroundCommand({ type: "openLinuxDoHome" })).toBe(true);
+    expect(isBackgroundCommand({ type: "openActivityLink", url: "https://linux.do/t/topic/1/2" })).toBe(true);
+    expect(isBackgroundCommand({ type: "openActivityLink", url: "/t/topic/1/2" })).toBe(true);
     expect(isBackgroundCommand({ type: "exportConfig" })).toBe(true);
     expect(isBackgroundCommand({ type: "importConfig", json: "{}" })).toBe(true);
     expect(isBackgroundCommand({ type: "clearCache" })).toBe(true);
@@ -62,6 +71,7 @@ describe("message contracts", () => {
     expect(isBackgroundCommand({ type: "updateFriend", username: "neil", patch: { activityKinds: ["bad"] } })).toBe(false);
     expect(isBackgroundCommand({ type: "seedFollowedUser", user: { name: "No username" } })).toBe(false);
     expect(isBackgroundCommand({ type: "updateSettings", settings: { refreshIntervalMinutes: 1 } })).toBe(false);
+    expect(isBackgroundCommand({ type: "openActivityLink", url: "https://example.com/t/topic/1" })).toBe(false);
     expect(isBackgroundCommand({ type: "importConfig", json: "" })).toBe(false);
   });
 
@@ -69,7 +79,7 @@ describe("message contracts", () => {
     const { send } = await setupWorker();
     const response = await send({
       type: "updateSettings",
-      settings: { allowAutoRefresh: true, allowInactiveTabFallback: true, refreshIntervalMinutes: 60 }
+      settings: { allowAutoRefresh: true, allowInactiveTabFallback: true, openActivityLinksInPage: true, refreshIntervalMinutes: 60 }
     });
     expect(response).toMatchObject({
       ok: true,
@@ -77,6 +87,7 @@ describe("message contracts", () => {
         settings: {
           allowAutoRefresh: false,
           allowInactiveTabFallback: false,
+          openActivityLinksInPage: true,
           refreshIntervalMinutes: 60
         }
       }
@@ -248,10 +259,69 @@ describe("message contracts", () => {
     expect(runtime.openOptionsPage).toHaveBeenCalled();
   });
 
+  it("routes activity links through the active linux.do page script", async () => {
+    const { send, tabs } = await setupWorker({
+      tabs: {
+        query: vi.fn(async () => [{ id: 123, url: "https://linux.do/latest" } as chrome.tabs.Tab]),
+        sendMessage: vi.fn(async () => ({ ok: true, url: "https://linux.do/t/topic/1/2" })),
+        create: vi.fn(),
+        update: vi.fn()
+      }
+    });
+
+    const response = await send({ type: "openActivityLink", url: "https://linux.do/t/topic/1/2" });
+
+    expect(response).toMatchObject({ ok: true, data: { tabId: 123, openedNewTab: false } });
+    expect(tabs.sendMessage).toHaveBeenCalledWith(123, { type: "linuxdoFriends.navigateInPage", url: "https://linux.do/t/topic/1/2" });
+    expect(tabs.update).not.toHaveBeenCalled();
+    expect(tabs.create).not.toHaveBeenCalled();
+  });
+
+  it("updates the active linux.do tab when page-script navigation is unavailable", async () => {
+    const { send, tabs } = await setupWorker({
+      tabs: {
+        query: vi.fn(async () => [{ id: 123, url: "https://linux.do/latest" } as chrome.tabs.Tab]),
+        sendMessage: vi.fn(async () => ({ ok: false, reason: "unavailable", error: "missing" })),
+        create: vi.fn(),
+        update: vi.fn(async () => ({ id: 123, url: "https://linux.do/t/topic/1/2" }) as chrome.tabs.Tab)
+      }
+    });
+
+    const response = await send({ type: "openActivityLink", url: "https://linux.do/t/topic/1/2" });
+
+    expect(response).toMatchObject({ ok: true, data: { tabId: 123, openedNewTab: false } });
+    expect(tabs.update).toHaveBeenCalledWith(123, { url: "https://linux.do/t/topic/1/2" });
+    expect(tabs.create).not.toHaveBeenCalled();
+  });
+
+  it("opens activity links in a new tab when the active tab is outside linux.do", async () => {
+    const { send, tabs } = await setupWorker({
+      tabs: {
+        query: vi.fn(async () => [{ id: 456, url: "https://example.com/" } as chrome.tabs.Tab]),
+        sendMessage: vi.fn(),
+        create: vi.fn(async () => ({ id: 789, url: "https://linux.do/t/topic/1/2" }) as chrome.tabs.Tab),
+        update: vi.fn()
+      }
+    });
+
+    const response = await send({ type: "openActivityLink", url: "https://linux.do/t/topic/1/2" });
+
+    expect(response).toMatchObject({ ok: true, data: { tabId: 789, openedNewTab: true } });
+    expect(tabs.sendMessage).not.toHaveBeenCalled();
+    expect(tabs.update).not.toHaveBeenCalled();
+    expect(tabs.create).toHaveBeenCalledWith({ url: "https://linux.do/t/topic/1/2", active: true });
+  });
+
   it("allows session storage access from content scripts when Chrome exposes the API", async () => {
     const { sessionStorage } = await setupWorker();
 
     expect(sessionStorage.setAccessLevel).toHaveBeenCalledWith({ accessLevel: "TRUSTED_AND_UNTRUSTED_CONTEXTS" });
+  });
+
+  it("restricts local storage to trusted contexts when Chrome exposes the API", async () => {
+    const { localStorage } = await setupWorker();
+
+    expect(localStorage.setAccessLevel).toHaveBeenCalledWith({ accessLevel: "TRUSTED_CONTEXTS" });
   });
 
   it("persists page script status snapshots to session storage on heartbeat", async () => {
@@ -281,6 +351,290 @@ describe("message contracts", () => {
     const { sidePanel } = await setupWorker({ includeSessionAccessLevel: false });
 
     expect(sidePanel.setPanelBehavior).toHaveBeenCalledWith({ openPanelOnActionClick: true });
+  });
+
+  it("starts cloud save browser-code login without returning a token", async () => {
+    const { send, localStorage, windows } = await setupWorker();
+
+    const response = await send({ type: "bindCloudSave" });
+
+    const [popupOptions] = windows.create.mock.calls[0] as unknown as [{ url: string; type: string; width: number; height: number }];
+    const url = new URL(popupOptions.url);
+    expect(url.origin).toBe("https://linuxdo-cloud-save.lafish.workers.dev");
+    expect(url.pathname).toBe("/auth/start");
+    expect(url.searchParams.get("app")).toBe("linuxdo-friends");
+    expect(url.searchParams.get("flow")).toBe("browser_code");
+    expect(url.searchParams.get("challenge")).toBeTruthy();
+    expect(popupOptions).toMatchObject({
+      type: "popup",
+      width: 520,
+      height: 720
+    });
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        binding: { bound: false },
+        message: "已打开 linuxdo-cloud-save 登录窗口。",
+        authWindowId: 77
+      }
+    });
+    expect(localStorage.dump()).toMatchObject({ linuxdoFriendsCloudAuthVerifier: expect.any(String) });
+    expect(localStorage.dump()).toMatchObject({ linuxdoFriendsCloudAuthWindowId: 77 });
+    expect(JSON.stringify(response)).not.toContain("secret-token");
+  });
+
+  it("exchanges browser-code completion code and persists cloud auth", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => cloudExchangeResponse()));
+    const { send, localStorage, windows } = await setupWorker({
+      initialCloudVerifier: "verifier-1"
+    });
+
+    const response = await sendCloudExchangeCode(send, "code-1");
+
+    expect(fetch).toHaveBeenCalledWith("https://linuxdo-cloud-save.lafish.workers.dev/auth/exchange", {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ app: "linuxdo-friends", code: "code-1", verifier: "verifier-1" })
+    });
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        binding: { bound: true, linuxDoId: "42", tokenKind: "jwt", tokenType: "Bearer" },
+        message: "已绑定 linuxdo-cloud-save。"
+      }
+    });
+    expect(JSON.stringify(response)).not.toContain("secret-token");
+    expect(localStorage.dump()).toMatchObject({
+      [CLOUD_AUTH_STORAGE_KEY]: { token: "secret-token", linuxDoId: "42" }
+    });
+    expect(localStorage.dump()).not.toHaveProperty("linuxdoFriendsCloudAuthVerifier");
+    expect(localStorage.dump()).not.toHaveProperty("linuxdoFriendsCloudAuthWindowId");
+    expect(windows.remove).toHaveBeenCalledWith(77);
+  });
+
+  it("rejects invalid exchange payloads without persisting token", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        cloudExchangeResponse({
+          app: "wrong",
+          token: "secret-token",
+          token_type: "Bearer",
+          token_kind: "jwt",
+          linux_do_id: "42"
+        })
+      )
+    );
+    const { send, localStorage } = await setupWorker({
+      initialCloudVerifier: "verifier-1"
+    });
+
+    const response = await sendCloudExchangeCode(send, "code-1");
+
+    expect(response).toMatchObject({ ok: false, error: "云存档登录来源不正确。" });
+    expect(localStorage.dump()).not.toHaveProperty(CLOUD_AUTH_STORAGE_KEY);
+    expect(localStorage.dump()).not.toHaveProperty("linuxdoFriendsCloudAuthVerifier");
+    expect(JSON.stringify(response)).not.toContain("secret-token");
+  });
+
+  it("returns unbound cloud status without fetching", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const { send } = await setupWorker();
+
+    const response = await send({ type: "getCloudConfigStatus" });
+
+    expect(response).toEqual({
+      ok: true,
+      data: {
+        binding: { bound: false },
+        status: { state: "unchecked" },
+        message: "尚未绑定 linuxdo-cloud-save。"
+      }
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reads cloud config status without mutating stored state", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => configResponse({ friends: { neo: minimalFriend("neo") } })));
+    const state = addFriendFromProfile(defaultAppState, { username: "local", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const { send, localStorage } = await setupWorker({ initialState: state, initialCloudAuth: cloudAuthFixture() });
+
+    const response = await send({ type: "getCloudConfigStatus" });
+
+    expect(fetch).toHaveBeenCalledWith("https://linuxdo-cloud-save.lafish.workers.dev/api/apps/linuxdo-friends/slots/config", {
+      method: "GET",
+      headers: { Accept: "application/json", Authorization: "Bearer secret-token" }
+    });
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        binding: { bound: true, linuxDoId: "42" },
+        status: { state: "remote_config", friendCount: 1 },
+        message: "云端配置：1 位佬朋友。"
+      }
+    });
+    expect(localStorage.dump()).toMatchObject({
+      linuxdoFriendsState: { friends: { local: { username: "local" } } },
+      [CLOUD_AUTH_STORAGE_KEY]: { token: "secret-token", linuxDoId: "42" }
+    });
+    expect(localStorage.dump()[CLOUD_AUTH_STORAGE_KEY]).not.toHaveProperty("lastStatus");
+  });
+
+  it("backs up migratable config to the cloud config slot", async () => {
+    const fetchImpl = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const state = addFriendFromProfile(defaultAppState, { username: "Neo", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const { send } = await setupWorker({ initialState: state, initialCloudAuth: cloudAuthFixture() });
+
+    const response = await send({ type: "backupCloudConfig" });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: { status: { state: "remote_config", friendCount: 1 }, message: "已备份 1 位佬朋友到云端。" }
+    });
+    const [url, request] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://linuxdo-cloud-save.lafish.workers.dev/api/apps/linuxdo-friends/slots/config");
+    expect(request.method).toBe("PUT");
+    expect(request.headers).toEqual({ Accept: "application/json", Authorization: "Bearer secret-token", "Content-Type": "application/json" });
+    const body = JSON.parse(String(request.body));
+    expect(body).toMatchObject({ schemaVersion: 1, source: "linuxdo-friends", friends: { neo: { username: "neo" } } });
+    expect(body).not.toHaveProperty("currentAccount");
+    expect(JSON.stringify(body)).not.toContain("secret-token");
+    expect(JSON.stringify(response)).not.toContain("secret-token");
+  });
+
+  it("redacts raw cloud request errors from backup responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("request failed Authorization: Bearer secret-token token=secret-token");
+      })
+    );
+    const state = addFriendFromProfile(defaultAppState, { username: "Neo", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const { send } = await setupWorker({ initialState: state, initialCloudAuth: cloudAuthFixture() });
+
+    const response = await send({ type: "backupCloudConfig" });
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: "request failed Authorization: Bearer <redacted> token=<redacted>"
+    });
+    expect(JSON.stringify(response)).not.toContain("secret-token");
+  });
+
+  it("redacts raw exchange errors from cloud bind responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("failed https://example.com/auth/complete/browser_code?code=secret-code Authorization: Bearer secret-token verifier=verifier-1");
+      })
+    );
+    const { send } = await setupWorker({ initialCloudVerifier: "verifier-1" });
+
+    const response = await sendCloudExchangeCode(send, "secret-code");
+
+    expect(response).toMatchObject({ ok: false, error: "failed [redacted-url] Authorization: Bearer <redacted> verifier=<redacted>" });
+    expect(JSON.stringify(response)).not.toContain("secret-token");
+    expect(JSON.stringify(response)).not.toContain("secret-code");
+    expect(JSON.stringify(response)).not.toContain("verifier-1");
+  });
+
+  it("rejects cloud exchange messages outside the cloud-save complete page", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => cloudExchangeResponse()));
+    const { send, localStorage } = await setupWorker({ initialCloudVerifier: "verifier-1" });
+
+    const emptySenderResponse = await send({ type: "cloudSaveExchangeCode", code: "code-1" });
+    const linuxDoSenderResponse = await send(
+      { type: "cloudSaveExchangeCode", code: "code-1" },
+      { url: "https://linux.do/latest" }
+    );
+
+    expect(emptySenderResponse).toMatchObject({ ok: false, error: "云存档登录完成消息来源不正确。" });
+    expect(linuxDoSenderResponse).toMatchObject({ ok: false, error: "云存档登录完成消息来源不正确。" });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(localStorage.dump()).not.toHaveProperty(CLOUD_AUTH_STORAGE_KEY);
+    expect(localStorage.dump()).toMatchObject({ linuxdoFriendsCloudAuthVerifier: "verifier-1" });
+  });
+
+  it("restores cloud config through existing import semantics and preserves cloud binding", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => configResponse({ friends: { neo: minimalFriend("neo") }, settings: { refreshIntervalMinutes: 90 } })));
+    const state = {
+      ...addFriendFromProfile(defaultAppState, { username: "old", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" as const }
+    };
+    const { send, localStorage, sessionStorage } = await setupWorker({
+      initialState: state,
+      initialCloudAuth: cloudAuthFixture(),
+      initialSession: { [SITE_DATA_PROGRESS_STORAGE_KEY]: { taskId: "old" } }
+    });
+
+    const response = await send({ type: "restoreCloudConfig" });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        state: {
+          friends: { neo: { username: "neo" } },
+          settings: { refreshIntervalMinutes: 90 },
+          lastSync: { message: "已导入 1 位佬朋友配置。" }
+        },
+        binding: { bound: true, linuxDoId: "42", lastRestoreAt: expect.any(String) },
+        status: { state: "remote_config", friendCount: 1 }
+      }
+    });
+    expect((localStorage.dump().linuxdoFriendsState as typeof defaultAppState).friends.old).toBeUndefined();
+    expect((localStorage.dump().linuxdoFriendsState as typeof defaultAppState).currentAccount).toBeUndefined();
+    expect(localStorage.dump()).toMatchObject({ [CLOUD_AUTH_STORAGE_KEY]: { token: "secret-token", linuxDoId: "42" } });
+    expect(sessionStorage.dump()).not.toHaveProperty(SITE_DATA_PROGRESS_STORAGE_KEY);
+    expect(JSON.stringify(response)).not.toContain("secret-token");
+  });
+
+  it("does not mutate AppState when remote cloud config is invalid", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ bad: true }), { status: 200 })));
+    const state = addFriendFromProfile(defaultAppState, { username: "old", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const { send, localStorage } = await setupWorker({ initialState: state, initialCloudAuth: cloudAuthFixture() });
+
+    const response = await send({ type: "restoreCloudConfig" });
+
+    expect(response).toMatchObject({ ok: false, error: "配置文件版本不支持。" });
+    expect(localStorage.dump()).toMatchObject({ linuxdoFriendsState: { friends: { old: { username: "old" } } } });
+  });
+
+  it("reports unauthorized cloud status with a safe rebind message", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("unauthorized secret-token", { status: 401 })));
+    const { send } = await setupWorker({ initialCloudAuth: cloudAuthFixture() });
+
+    const response = await send({ type: "getCloudConfigStatus" });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: { status: { state: "unauthorized", message: "云存档授权已失效，请重新绑定。" } }
+    });
+    expect(JSON.stringify(response)).not.toContain("secret-token");
+  });
+
+  it("reports malformed cloud status as invalid config", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not-json", { status: 200 })));
+    const { send, localStorage } = await setupWorker({ initialCloudAuth: cloudAuthFixture() });
+
+    const response = await send({ type: "getCloudConfigStatus" });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: { status: { state: "invalid_config", message: "云端配置不是有效的 JSON 对象。" } }
+    });
+    expect(localStorage.dump()[CLOUD_AUTH_STORAGE_KEY]).not.toHaveProperty("lastStatus");
+  });
+
+  it("clears cloud binding separately from local config", async () => {
+    const state = addFriendFromProfile(defaultAppState, { username: "old", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const { send, localStorage } = await setupWorker({ initialState: state, initialCloudAuth: cloudAuthFixture() });
+
+    const response = await send({ type: "clearCloudBinding" });
+
+    expect(response).toEqual({ ok: true, data: { binding: { bound: false }, message: "已断开云存档绑定。" } });
+    expect(localStorage.dump()).not.toHaveProperty(CLOUD_AUTH_STORAGE_KEY);
+    expect(localStorage.dump()).toMatchObject({ linuxdoFriendsState: { friends: { old: { username: "old" } } } });
   });
 
   it("adds a friend directly from a valid profile response", async () => {
@@ -1082,7 +1436,7 @@ describe("message contracts", () => {
         }
       },
       currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" as const },
-      settings: { ...defaultAppState.settings, refreshIntervalMinutes: 60 }
+      settings: { ...defaultAppState.settings, refreshIntervalMinutes: 60, openActivityLinksInPage: true }
     };
     const { send, sessionStorage } = await setupWorker({
       initialState: state,
@@ -1132,7 +1486,7 @@ describe("message contracts", () => {
         }
       },
       currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" as const },
-      settings: { ...defaultAppState.settings, refreshIntervalMinutes: 60 }
+      settings: { ...defaultAppState.settings, refreshIntervalMinutes: 60, openActivityLinksInPage: true }
     };
     const { send } = await setupWorker({ initialState: state });
 
@@ -1144,7 +1498,12 @@ describe("message contracts", () => {
         schemaVersion: 1,
         source: "linuxdo-friends",
         friends: { neil: { username: "neil" } },
-        settings: { refreshIntervalMinutes: 60, allowAutoRefresh: false, allowInactiveTabFallback: false }
+        settings: {
+          refreshIntervalMinutes: 60,
+          allowAutoRefresh: false,
+          allowInactiveTabFallback: false,
+          openActivityLinksInPage: true
+        }
       }
     });
     const exported = (response as { ok: true; data: Record<string, unknown> }).data;
@@ -1279,7 +1638,8 @@ describe("message contracts", () => {
         [SITE_DATA_PROGRESS_STORAGE_KEY]: { taskId: "old" },
         [PAGE_SCRIPT_STATUS_STORAGE_KEY]: { status: "connected" },
         "linuxdoFriendsUiScene.tab": "feed"
-      }
+      },
+      initialCloudAuth: cloudAuthFixture()
     });
 
     const response = await send({ type: "resetExtension" });
@@ -1299,6 +1659,7 @@ describe("message contracts", () => {
       }
     });
     expect((localStorage.dump().linuxdoFriendsState as typeof defaultAppState).currentAccount).toBeUndefined();
+    expect(localStorage.dump()).not.toHaveProperty(CLOUD_AUTH_STORAGE_KEY);
     expect(localStorage.dump()).not.toHaveProperty("linuxdoFriendsUpdateCheck");
     expect(sessionStorage.dump()).not.toHaveProperty(SITE_DATA_PROGRESS_STORAGE_KEY);
     expect(sessionStorage.dump()).not.toHaveProperty(PAGE_SCRIPT_STATUS_STORAGE_KEY);
@@ -1321,6 +1682,8 @@ async function setupWorker(
     initialState?: unknown;
     initialUpdateCheck?: unknown;
     initialSession?: Record<string, unknown>;
+    initialCloudAuth?: Record<string, unknown>;
+    initialCloudVerifier?: string;
     includeSessionAccessLevel?: boolean;
   } = {}
 ) {
@@ -1345,6 +1708,8 @@ async function setupWorker(
     ...overrides.tabs
   };
   const windows = {
+    create: vi.fn(async () => ({ id: 77 })),
+    remove: vi.fn(async () => undefined),
     update: vi.fn()
   };
   const sidePanel = {
@@ -1355,10 +1720,15 @@ async function setupWorker(
     ...createMockStorage(overrides.initialSession ?? {}),
     ...(overrides.includeSessionAccessLevel === false ? {} : { setAccessLevel: vi.fn() })
   };
-  const localStorage = createMockStorage({
-    ...(overrides.initialState ? { linuxdoFriendsState: overrides.initialState } : {}),
-    ...(overrides.initialUpdateCheck ? { linuxdoFriendsUpdateCheck: overrides.initialUpdateCheck } : {})
-  });
+  const localStorage = {
+    ...createMockStorage({
+      ...(overrides.initialState ? { linuxdoFriendsState: overrides.initialState } : {}),
+      ...(overrides.initialUpdateCheck ? { linuxdoFriendsUpdateCheck: overrides.initialUpdateCheck } : {}),
+      ...(overrides.initialCloudAuth ? { [CLOUD_AUTH_STORAGE_KEY]: overrides.initialCloudAuth } : {}),
+      ...(overrides.initialCloudVerifier ? { linuxdoFriendsCloudAuthVerifier: overrides.initialCloudVerifier, linuxdoFriendsCloudAuthWindowId: 77 } : {})
+    }),
+    setAccessLevel: vi.fn()
+  };
   vi.stubGlobal("chrome", {
     runtime: {
       ...runtime,
@@ -1403,6 +1773,16 @@ function createPendingChallengeFetch() {
   };
 }
 
+function sendCloudExchangeCode(
+  send: (message: unknown, sender?: chrome.runtime.MessageSender) => Promise<unknown>,
+  code: string
+) {
+  return send(
+    { type: "cloudSaveExchangeCode", code },
+    { url: "https://linuxdo-cloud-save.lafish.workers.dev/auth/complete/browser_code?code=redacted" }
+  );
+}
+
 function createPendingJsonFetch(payload: unknown) {
   let resolveFetch: (response: Response) => void = () => undefined;
   const pendingFetch = new Promise<Response>((resolve) => {
@@ -1426,5 +1806,55 @@ function profileResponse(username: string, name: string): Response {
       }
     }),
     { status: 200 }
+  );
+}
+
+function cloudAuthFixture() {
+  return {
+    app: "linuxdo-friends",
+    linuxDoId: "42",
+    tokenType: "Bearer",
+    tokenKind: "jwt",
+    token: "secret-token",
+    boundAt: "2026-06-29T00:00:00.000Z"
+  };
+}
+
+function cloudExchangeResponse(
+  overrides: Partial<Record<"app" | "linux_do_id" | "token" | "token_kind" | "token_type", string>> = {}
+): Response {
+  return new Response(
+    JSON.stringify({
+      app: "linuxdo-friends",
+      linux_do_id: "42",
+      token: "secret-token",
+      token_kind: "jwt",
+      token_type: "Bearer",
+      ...overrides
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } }
+  );
+}
+
+function minimalFriend(username: string) {
+  return {
+    username,
+    groups: [],
+    upgradedAt: "2026-06-29T00:00:00.000Z",
+    updatedAt: "2026-06-29T00:00:00.000Z"
+  };
+}
+
+function configResponse(overrides: Partial<Record<string, unknown>> = {}): Response {
+  return new Response(
+    JSON.stringify({
+      schemaVersion: 1,
+      source: "linuxdo-friends",
+      exportedAt: "2026-06-29T00:00:00.000Z",
+      friends: {},
+      settings: { refreshIntervalMinutes: 60 },
+      ...overrides
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } }
   );
 }

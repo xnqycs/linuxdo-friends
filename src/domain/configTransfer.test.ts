@@ -47,6 +47,9 @@ describe("config transfer", () => {
     expect(file).not.toHaveProperty("currentAccount");
     expect(file).not.toHaveProperty("followedUsers");
     expect(file).not.toHaveProperty("activity");
+    expect(JSON.stringify(file)).not.toContain("token");
+    expect(JSON.stringify(file)).not.toContain("linux_do_id");
+    expect(JSON.stringify(file)).not.toContain("linuxdoFriendsCloudAuth");
   });
 
   it("normalizes valid import files", () => {
@@ -66,12 +69,17 @@ describe("config transfer", () => {
             updatedAt: "2026-06-28T00:00:00.000Z"
           }
         },
-        settings: { refreshIntervalMinutes: 60, allowAutoRefresh: true, allowInactiveTabFallback: true }
+        settings: { refreshIntervalMinutes: 60, allowAutoRefresh: true, allowInactiveTabFallback: true, openActivityLinksInPage: true }
       })
     );
 
     expect(file.friends.neo).toMatchObject({ username: "neo", groups: ["ops"], pinned: true, activityKinds: ["reply", "reaction"] });
-    expect(file.settings).toEqual({ allowAutoRefresh: false, allowInactiveTabFallback: false, refreshIntervalMinutes: 60 });
+    expect(file.settings).toEqual({
+      allowAutoRefresh: false,
+      allowInactiveTabFallback: false,
+      openActivityLinksInPage: true,
+      refreshIntervalMinutes: 60
+    });
   });
 
   it("defaults legacy imported friends to all activity kinds and preserves explicit empty scope", () => {
@@ -147,13 +155,14 @@ describe("config transfer", () => {
             updatedAt: "2026-06-28T00:00:00.000Z"
           }
         },
-        settings: { refreshIntervalMinutes: 90 }
+        settings: { refreshIntervalMinutes: 90, openActivityLinksInPage: true }
       })
     );
     const { state } = applyConfigImport(file, "2026-06-28T00:01:00.000Z");
 
     expect(state.friends).toEqual(file.friends);
     expect(state.settings.refreshIntervalMinutes).toBe(90);
+    expect(state.settings.openActivityLinksInPage).toBe(true);
     expect(state.activity).toEqual({});
     expect(state.currentAccount).toBeUndefined();
     expect(state.lastSync?.message).toBe("已导入 1 位佬朋友配置。");

@@ -10,6 +10,18 @@ import {
   type ActivityRequestStep
 } from "../domain/activityRefresh";
 import { defaultAppState } from "../domain/defaultState";
+import {
+  CLOUD_SAVE_APP_ID,
+  buildBrowserCodeAuthStartUrl,
+  cloudAuthExchangeUrl,
+  cloudAuthCompleteUrlPattern,
+  cloudConfigSlotUrl,
+  cloudConfigStatusFromError,
+  parseCloudAuthExchangePayload,
+  parseCloudConfigPayload,
+  sanitizeCloudErrorMessage,
+  summarizeCloudConfigPayload
+} from "../domain/cloudConfig";
 import { applyConfigImport, createConfigExport, parseConfigImportJson } from "../domain/configTransfer";
 import { addFriendFromKnownUser, addFriendFromProfile, removeFriend, updateFriend, upsertFollowedUser, upsertFriendProfile } from "../domain/friends";
 import {
@@ -31,10 +43,19 @@ import type {
   AppState,
   BackgroundCommand,
   BackgroundResponse,
+  CloudAuthState,
+  CloudConfigBackupResult,
+  CloudConfigBindResult,
+  CloudConfigClearBindingResult,
+  CloudConfigOperationResult,
+  CloudConfigRestoreResult,
+  CloudConfigStatusResult,
+  CloudConfigStatus,
   ContentScriptActivityResponse,
   ContentScriptAvatarResponse,
   ContentScriptCurrentAccountResponse,
   ContentScriptFollowingResponse,
+  ContentScriptNavigationResponse,
   ContentScriptHeartbeatMessage,
   ContentScriptProfileResponse,
   PageRepairResult,
@@ -46,6 +67,14 @@ import type {
   UpdateCheckState,
   Username
 } from "../shared/types";
+import {
+  clearCloudAuth,
+  configureCloudAuthStorageAccess,
+  loadCloudAuth,
+  saveCloudAuth,
+  toPublicCloudBinding,
+  updateCloudAuth
+} from "../storage/cloudAuthStorage";
 import { PAGE_SCRIPT_STATUS_STORAGE_KEY, savePageScriptStatusState } from "../storage/pageScriptStatusStorage";
 import { SITE_DATA_PROGRESS_STORAGE_KEY, saveSiteDataProgressState } from "../storage/siteDataProgressStorage";
 import { loadState, saveState } from "../storage/storage";
@@ -67,8 +96,11 @@ let stateWriteGeneration = 0;
 const pageScriptHeartbeats = new Map<number, PageScriptHeartbeat>();
 const heartbeatFreshMs = 45_000;
 const heartbeatStaleMs = 120_000;
+const CLOUD_AUTH_VERIFIER_STORAGE_KEY = "linuxdoFriendsCloudAuthVerifier";
+const CLOUD_AUTH_WINDOW_STORAGE_KEY = "linuxdoFriendsCloudAuthWindowId";
 
 configureSessionStorageAccess();
+configureLocalStorageAccess();
 configureSidePanelAction();
 
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
@@ -95,6 +127,12 @@ function configureSessionStorageAccess() {
   } catch {
     // Content-script access depends on Chrome support; tests and partial APIs may not expose it.
   }
+}
+
+function configureLocalStorageAccess() {
+  void configureCloudAuthStorageAccess().catch(() => {
+    // Older and test Chrome surfaces may not expose local storage access levels.
+  });
 }
 
 async function handleMessage(message: unknown, sender: chrome.runtime.MessageSender): Promise<BackgroundResponse> {
@@ -144,6 +182,21 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
       return ok(await loadUpdateCheckState(installedVersion()));
     case "checkForUpdates":
       return ok(await checkForUpdates(command.force === true));
+    case "getCloudConfigStatus":
+      return ok(await runCloudCommand(getCloudConfigStatus));
+    case "bindCloudSave":
+      return ok(await runCloudCommand(bindCloudSave));
+    case "cloudSaveExchangeCode":
+      assertCloudSaveCompleteSender(sender);
+      return ok(await runCloudCommand(() => exchangeCloudSaveCode(command.code)));
+    case "backupCloudConfig":
+      return ok(await runCloudCommand(backupCloudConfig));
+    case "restoreCloudConfig":
+      return ok(await runCloudCommand(restoreCloudConfig));
+    case "clearCloudBinding":
+      await clearCloudAuth();
+      await clearCloudAuthHandshake();
+      return ok({ binding: { bound: false }, message: "已断开云存档绑定。" } satisfies CloudConfigClearBindingResult);
     case "repairLinuxDoPageScript":
       return ok(await repairLinuxDoPageScript(command.tabId));
     case "openSidePanel":
@@ -152,6 +205,8 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
       return ok(await openOptionsPage());
     case "openLinuxDoHome":
       return ok(await openLinuxDoHome());
+    case "openActivityLink":
+      return ok(await openActivityLink(command.url));
     case "updateSettings":
       return ok(
         await updateAppState((state) => ({
@@ -265,11 +320,303 @@ async function resetExtension(): Promise<AppState> {
     }
   };
   await saveState(next);
-  await removeLocalStorageKeys([UPDATE_CHECK_STORAGE_KEY]);
+  await removeLocalStorageKeys([UPDATE_CHECK_STORAGE_KEY, CLOUD_AUTH_VERIFIER_STORAGE_KEY, CLOUD_AUTH_WINDOW_STORAGE_KEY]);
+  await clearCloudAuth();
   await removeSessionStorageKeys([SITE_DATA_PROGRESS_STORAGE_KEY, PAGE_SCRIPT_STATUS_STORAGE_KEY, ...allUiSceneStorageKeys]);
   pageScriptHeartbeats.clear();
   lastSiteDataProgress = null;
   return next;
+}
+
+async function bindCloudSave(): Promise<CloudConfigBindResult> {
+  const verifier = randomCloudVerifier();
+  const challenge = await sha256Base64url(verifier);
+  await saveCloudAuthVerifier(verifier);
+  const popup = await chrome.windows.create({
+    url: buildBrowserCodeAuthStartUrl(challenge),
+    type: "popup",
+    width: 520,
+    height: 720
+  });
+  await saveCloudAuthWindowId(popup?.id);
+  return {
+    binding: toPublicCloudBinding(await loadCloudAuth()),
+    status: { state: "unchecked" },
+    message: "已打开 linuxdo-cloud-save 登录窗口。",
+    authWindowId: popup?.id
+  };
+}
+
+async function runCloudCommand(command: () => Promise<CloudConfigOperationResult>): Promise<CloudConfigOperationResult> {
+  try {
+    return await command();
+  } catch (error) {
+    throw new Error(sanitizeCloudErrorMessage(error instanceof Error ? error.message : "云存档操作失败。"));
+  }
+}
+
+async function exchangeCloudSaveCode(code: string): Promise<CloudConfigBindResult> {
+  const verifier = await loadCloudAuthVerifier();
+  if (!verifier) throw new Error("缺少 cloud-save verifier。");
+  try {
+    const response = await fetch(cloudAuthExchangeUrl(), {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        app: CLOUD_SAVE_APP_ID,
+        code,
+        verifier
+      })
+    });
+    const payload = await safeJsonObject(response);
+    if (!response.ok) {
+      throw new Error(cloudExchangeFailureMessage(payload));
+    }
+    const result = parseCloudAuthExchangePayload(payload);
+    const auth = await saveCloudAuth({
+      app: result.app,
+      linuxDoId: result.linuxDoId,
+      tokenType: result.tokenType,
+      tokenKind: result.tokenKind,
+      token: result.token,
+      boundAt: nowIso()
+    });
+    await closeCloudAuthWindow();
+    await clearCloudAuthHandshake();
+    return {
+      binding: toPublicCloudBinding(auth),
+      status: auth.lastStatus,
+      message: "已绑定 linuxdo-cloud-save。"
+    };
+  } catch (error) {
+    await clearCloudAuthHandshake();
+    throw error;
+  }
+}
+
+function assertCloudSaveCompleteSender(sender: chrome.runtime.MessageSender): void {
+  const senderUrl = sender.url ?? sender.tab?.url ?? "";
+  if (!isCloudSaveCompleteUrl(senderUrl)) {
+    throw new Error("云存档登录完成消息来源不正确。");
+  }
+}
+
+function isCloudSaveCompleteUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const pattern = new URL(cloudAuthCompleteUrlPattern().replace(/\*$/, ""));
+    return url.protocol === pattern.protocol && url.hostname === pattern.hostname && url.pathname === pattern.pathname;
+  } catch {
+    return false;
+  }
+}
+
+async function getCloudConfigStatus(): Promise<CloudConfigStatusResult> {
+  const auth = await loadCloudAuth();
+  if (!auth) {
+    return {
+      binding: { bound: false },
+      status: { state: "unchecked" },
+      message: "尚未绑定 linuxdo-cloud-save。"
+    };
+  }
+  const status = await fetchCloudConfigStatus(auth);
+  return {
+    binding: toPublicCloudBinding(auth),
+    status,
+    message: cloudStatusMessage(status)
+  };
+}
+
+async function backupCloudConfig(): Promise<CloudConfigBackupResult> {
+  const auth = await requireCloudAuth();
+  const payload = createConfigExport(await loadState());
+  const response = await fetchCloudConfig("PUT", auth, payload);
+  if (!response.ok) {
+    const status = cloudStatusFromResponse(response);
+    await updateCloudAuth((current) => ({ ...current, lastStatus: status }));
+    throw new Error(status.message ?? "云端备份失败。");
+  }
+  const backedUpAt = nowIso();
+  const status = summarizeCloudConfigPayload(payload, backedUpAt);
+  const updated = await updateCloudAuth((current) => ({
+    ...current,
+    lastStatus: status,
+    lastBackupAt: backedUpAt
+  }));
+  return {
+    binding: toPublicCloudBinding(updated ?? auth),
+    status,
+    message: `已备份 ${status.friendCount ?? 0} 位佬朋友到云端。`
+  };
+}
+
+async function restoreCloudConfig(): Promise<CloudConfigRestoreResult> {
+  const auth = await requireCloudAuth();
+  const response = await fetchCloudConfig("GET", auth);
+  if (!response.ok) {
+    const status = cloudStatusFromResponse(response);
+    await updateCloudAuth((current) => ({ ...current, lastStatus: status }));
+    throw new Error(status.message ?? "读取云端配置失败。");
+  }
+  const payload = await safeJsonObject(response);
+  const file = parseCloudConfigPayload(payload);
+  const nextState = await importConfig(JSON.stringify(file));
+  const restoredAt = nowIso();
+  const status = summarizeCloudConfigPayload(file, restoredAt);
+  const updated = await updateCloudAuth((current) => ({
+    ...current,
+    lastStatus: status,
+    lastRestoreAt: restoredAt
+  }));
+  return {
+    binding: toPublicCloudBinding(updated ?? auth),
+    status,
+    state: nextState,
+    message: nextState.lastSync?.message ?? "已从云端恢复配置。"
+  };
+}
+
+async function requireCloudAuth(): Promise<CloudAuthState> {
+  const auth = await loadCloudAuth();
+  if (!auth) throw new Error("尚未绑定 linuxdo-cloud-save。");
+  return auth;
+}
+
+async function fetchCloudConfig(method: "GET" | "PUT", auth: CloudAuthState, body?: unknown): Promise<Response> {
+  try {
+    return await fetch(cloudConfigSlotUrl(), {
+      method,
+      headers: {
+        Accept: "application/json",
+        Authorization: `${auth.tokenType} ${auth.token}`,
+        ...(method === "PUT" ? { "Content-Type": "application/json" } : {})
+      },
+      ...(method === "PUT" ? { body: JSON.stringify(body ?? {}) } : {})
+    });
+  } catch (error) {
+    throw new Error(sanitizeCloudErrorMessage(error instanceof Error ? error.message : "云存档网络请求失败。"));
+  }
+}
+
+async function saveCloudAuthVerifier(verifier: string): Promise<void> {
+  await chrome.storage?.local?.set?.({ [CLOUD_AUTH_VERIFIER_STORAGE_KEY]: verifier });
+}
+
+async function loadCloudAuthVerifier(): Promise<string | null> {
+  const result = await chrome.storage?.local?.get?.(CLOUD_AUTH_VERIFIER_STORAGE_KEY);
+  const verifier = result?.[CLOUD_AUTH_VERIFIER_STORAGE_KEY];
+  return typeof verifier === "string" && verifier.trim() ? verifier : null;
+}
+
+async function saveCloudAuthWindowId(windowId: number | undefined): Promise<void> {
+  if (typeof windowId !== "number") return;
+  await chrome.storage?.local?.set?.({ [CLOUD_AUTH_WINDOW_STORAGE_KEY]: windowId });
+}
+
+async function loadCloudAuthWindowId(): Promise<number | null> {
+  const result = await chrome.storage?.local?.get?.(CLOUD_AUTH_WINDOW_STORAGE_KEY);
+  const windowId = result?.[CLOUD_AUTH_WINDOW_STORAGE_KEY];
+  return typeof windowId === "number" && Number.isInteger(windowId) && windowId > 0 ? windowId : null;
+}
+
+async function clearCloudAuthHandshake(): Promise<void> {
+  await removeLocalStorageKeys([CLOUD_AUTH_VERIFIER_STORAGE_KEY, CLOUD_AUTH_WINDOW_STORAGE_KEY]);
+}
+
+async function closeCloudAuthWindow(): Promise<void> {
+  const windowId = await loadCloudAuthWindowId();
+  if (windowId == null || typeof chrome.windows?.remove !== "function") return;
+  try {
+    await chrome.windows.remove(windowId);
+  } catch {
+    // The user may have closed the popup before the completion page reports back.
+  }
+}
+
+function randomCloudVerifier(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return base64url(bytes.buffer);
+}
+
+async function sha256Base64url(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  return base64url(await crypto.subtle.digest("SHA-256", data));
+}
+
+function base64url(bytes: ArrayBuffer): string {
+  let value = "";
+  for (const byte of new Uint8Array(bytes)) {
+    value += String.fromCharCode(byte);
+  }
+  return btoa(value).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function cloudExchangeFailureMessage(payload: Record<string, unknown>): string {
+  const error = payload.error;
+  if (typeof error === "object" && error != null && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return "cloud-save exchange failed";
+}
+
+async function fetchCloudConfigStatus(auth: CloudAuthState): Promise<CloudConfigStatus> {
+  try {
+    const response = await fetchCloudConfig("GET", auth);
+    if (!response.ok) return cloudStatusFromResponse(response);
+    return summarizeCloudConfigPayload(await safeJsonObject(response));
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.name === "CloudConfigError") return cloudConfigStatusFromError("invalid_config", error.message);
+      return cloudConfigStatusFromError("network_error", error.message);
+    }
+    return cloudConfigStatusFromError("network_error", "云存档状态检查失败。");
+  }
+}
+
+async function safeJsonObject(response: Response): Promise<Record<string, unknown>> {
+  try {
+    const payload = (await response.json()) as unknown;
+    if (typeof payload === "object" && payload != null && !Array.isArray(payload)) return payload as Record<string, unknown>;
+  } catch {
+    // Fall through to the curated error below.
+  }
+  throw cloudConfigStatusError("云端配置不是有效的 JSON 对象。");
+}
+
+function cloudConfigStatusError(message: string): Error {
+  const error = new Error(message);
+  error.name = "CloudConfigError";
+  return error;
+}
+
+function cloudStatusFromResponse(response: Response): CloudConfigStatus {
+  if (response.status === 401 || response.status === 403) {
+    return cloudConfigStatusFromError("unauthorized", "云存档授权已失效，请重新绑定。");
+  }
+  if (response.status === 404) {
+    return cloudConfigStatusFromError("missing", "云端还没有配置备份。");
+  }
+  return cloudConfigStatusFromError("network_error", `云存档请求失败：HTTP ${response.status}`);
+}
+
+function cloudStatusMessage(status: CloudConfigStatus): string {
+  switch (status.state) {
+    case "remote_config":
+      return `云端配置：${status.friendCount ?? 0} 位佬朋友。`;
+    case "missing":
+    case "unauthorized":
+    case "invalid_config":
+    case "network_error":
+      return status.message ?? "云存档状态检查失败。";
+    case "unchecked":
+      return "尚未检查云端配置。";
+  }
 }
 
 async function removeLocalStorageKeys(keys: string[]) {
@@ -1000,6 +1347,33 @@ async function openLinuxDoHome(): Promise<PageRepairResult> {
   return { message: "已打开 linux.do 首页，请完成浏览器验证后重试。", tabId: tab.id, openedNewTab: true };
 }
 
+async function openActivityLink(inputUrl: string): Promise<PageRepairResult> {
+  const url = normalizeLinuxDoUrl(inputUrl);
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (typeof activeTab?.id === "number" && isLinuxDoTab(activeTab)) {
+    const navigation = await sendNavigateInPageMessage(activeTab.id, url);
+    if (navigation.ok) {
+      return { message: "已在当前 linux.do 页面打开动态。", tabId: activeTab.id, openedNewTab: false };
+    }
+    await chrome.tabs.update(activeTab.id, { url });
+    return { message: "页面脚本不可用，已在当前 linux.do 标签页打开动态。", tabId: activeTab.id, openedNewTab: false };
+  }
+  const tab = await chrome.tabs.create({ url, active: true });
+  return { message: "已打开动态。", tabId: tab.id, openedNewTab: true };
+}
+
+function normalizeLinuxDoUrl(value: string): string {
+  const url = new URL(value, "https://linux.do");
+  if (url.protocol !== "https:" || url.hostname !== "linux.do") {
+    throw new Error("只能打开 linux.do 站内动态。");
+  }
+  return url.href;
+}
+
+function isLinuxDoTab(tab: chrome.tabs.Tab): boolean {
+  return typeof tab.url === "string" && tab.url.startsWith("https://linux.do/");
+}
+
 async function findRepairTargetTab(tabId?: number): Promise<chrome.tabs.Tab | null> {
   try {
     if (typeof tabId === "number") {
@@ -1124,6 +1498,18 @@ async function sendExtractActivityMessage(
     return response ?? { ok: false, reason: "unavailable", error: "已打开的 linux.do 页面没有响应动态刷新请求，请刷新页面后重试。" };
   } catch {
     return { ok: false, reason: "unavailable", error: "已打开的 linux.do 页面未加载佬朋友脚本，请刷新 linux.do 页面后重试。" };
+  }
+}
+
+async function sendNavigateInPageMessage(tabId: number, url: string): Promise<ContentScriptNavigationResponse> {
+  try {
+    const response = (await chrome.tabs.sendMessage(tabId, {
+      type: "linuxdoFriends.navigateInPage",
+      url
+    })) as ContentScriptNavigationResponse | undefined;
+    return response ?? { ok: false, reason: "unavailable", error: "已打开的 linux.do 页面没有响应跳转请求。" };
+  } catch {
+    return { ok: false, reason: "unavailable", error: "已打开的 linux.do 页面未加载佬朋友脚本。" };
   }
 }
 
