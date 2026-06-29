@@ -153,6 +153,7 @@ export type SiteDataTaskProgress = ActivityRefreshTaskProgress | ProfileRefreshT
 export interface RefreshSettings {
   allowAutoRefresh: boolean;
   allowInactiveTabFallback: boolean;
+  openActivityLinksInPage: boolean;
   refreshIntervalMinutes: number;
 }
 
@@ -182,6 +183,90 @@ export interface ConfigExportFile {
   exportedAt: string;
   friends: Record<Username, FriendUser>;
   settings: RefreshSettings;
+}
+
+export type CloudConfigStatusState = "unchecked" | "remote_config" | "missing" | "unauthorized" | "invalid_config" | "network_error";
+
+export interface CloudConfigStatus {
+  state: CloudConfigStatusState;
+  checkedAt?: string;
+  exportedAt?: string;
+  friendCount?: number;
+  message?: string;
+}
+
+export interface CloudAuthExchangeResult {
+  app: "linuxdo-friends";
+  linuxDoId: string;
+  tokenType: "Bearer";
+  tokenKind: "jwt";
+  token: string;
+}
+
+export interface CloudAuthState extends CloudAuthExchangeResult {
+  boundAt: string;
+  lastStatus?: CloudConfigStatus;
+  lastBackupAt?: string;
+  lastRestoreAt?: string;
+}
+
+export type CloudBindingPublicState =
+  | { bound: false; lastStatus?: CloudConfigStatus }
+  | {
+      bound: true;
+      app: "linuxdo-friends";
+      linuxDoId: string;
+      tokenType: "Bearer";
+      tokenKind: "jwt";
+      boundAt: string;
+      lastStatus?: CloudConfigStatus;
+      lastBackupAt?: string;
+      lastRestoreAt?: string;
+    };
+
+export interface CloudConfigStatusResult {
+  binding: CloudBindingPublicState;
+  status: CloudConfigStatus;
+  message: string;
+}
+
+export interface CloudConfigBindResult {
+  binding: CloudBindingPublicState;
+  status?: CloudConfigStatus;
+  message: string;
+  authWindowId?: number;
+}
+
+export interface CloudConfigBackupResult {
+  binding: CloudBindingPublicState;
+  status: CloudConfigStatus;
+  message: string;
+}
+
+export interface CloudConfigRestoreResult {
+  binding: CloudBindingPublicState;
+  status: CloudConfigStatus;
+  message: string;
+  state: AppState;
+}
+
+export interface CloudConfigClearBindingResult {
+  binding: CloudBindingPublicState;
+  message: string;
+}
+
+export type CloudConfigOperationResult =
+  | CloudConfigStatusResult
+  | CloudConfigBindResult
+  | CloudConfigBackupResult
+  | CloudConfigRestoreResult
+  | CloudConfigClearBindingResult;
+
+export interface CloudConfigViewState {
+  binding: CloudBindingPublicState;
+  status?: CloudConfigStatus;
+  message: string;
+  authWindowId?: number;
 }
 
 export type PageScriptHeartbeatStatus = "ready" | "challenge" | "unavailable";
@@ -270,10 +355,17 @@ export type BackgroundCommand =
   | { type: "getPageScriptStatus" }
   | { type: "getUpdateCheck" }
   | { type: "checkForUpdates"; force?: boolean }
+  | { type: "getCloudConfigStatus" }
+  | { type: "bindCloudSave" }
+  | { type: "cloudSaveExchangeCode"; code: string }
+  | { type: "backupCloudConfig" }
+  | { type: "restoreCloudConfig" }
+  | { type: "clearCloudBinding" }
   | { type: "repairLinuxDoPageScript"; tabId?: number }
   | { type: "openSidePanel" }
   | { type: "openOptionsPage" }
   | { type: "openLinuxDoHome" }
+  | { type: "openActivityLink"; url: string }
   | { type: "updateSettings"; settings: Partial<RefreshSettings> }
   | { type: "exportConfig" }
   | { type: "importConfig"; json: string }
@@ -304,7 +396,8 @@ export type ContentScriptCommand =
       kind?: ActivityKindFilter | "user_actions";
       step?: { kind: ActivityRefreshRequestKind; path: string };
     }
-  | { type: "linuxdoFriends.extractAvatar"; username: Username; avatarUrl: string };
+  | { type: "linuxdoFriends.extractAvatar"; username: Username; avatarUrl: string }
+  | { type: "linuxdoFriends.navigateInPage"; url: string };
 
 export type ContentScriptFailureResponse = { ok: false; reason: RefreshFailureReason | "unavailable"; error: string };
 
@@ -328,9 +421,14 @@ export type ContentScriptAvatarResponse =
   | { ok: true; username: Username; sourceUrl: string; dataUrl: string; contentType: string; byteLength: number }
   | ContentScriptFailureResponse;
 
+export type ContentScriptNavigationResponse =
+  | { ok: true; url: string }
+  | ContentScriptFailureResponse;
+
 export type ContentScriptResponse =
   | ContentScriptCurrentAccountResponse
   | ContentScriptFollowingResponse
   | ContentScriptActivityResponse
   | ContentScriptProfileResponse
-  | ContentScriptAvatarResponse;
+  | ContentScriptAvatarResponse
+  | ContentScriptNavigationResponse;

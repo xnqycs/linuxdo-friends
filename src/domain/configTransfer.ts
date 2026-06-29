@@ -122,6 +122,7 @@ function normalizeStoredSettings(value: Partial<RefreshSettings> | Record<string
   return {
     ...defaultAppState.settings,
     refreshIntervalMinutes,
+    openActivityLinksInPage: value.openActivityLinksInPage === true,
     allowAutoRefresh: false,
     allowInactiveTabFallback: false
   };
@@ -142,9 +143,13 @@ function normalizeImportedSettings(value: Partial<RefreshSettings> | Record<stri
   if (value.allowInactiveTabFallback !== undefined && typeof value.allowInactiveTabFallback !== "boolean") {
     throw new Error("配置文件的后台标签页设置不正确。");
   }
+  if (value.openActivityLinksInPage !== undefined && typeof value.openActivityLinksInPage !== "boolean") {
+    throw new Error("配置文件的动态跳转设置不正确。");
+  }
   return {
     ...defaultAppState.settings,
     refreshIntervalMinutes: value.refreshIntervalMinutes,
+    openActivityLinksInPage: value.openActivityLinksInPage === true,
     allowAutoRefresh: false,
     allowInactiveTabFallback: false
   };

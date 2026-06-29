@@ -12,6 +12,7 @@ import type {
   ContentScriptCommand,
   ContentScriptCurrentAccountResponse,
   ContentScriptFollowingResponse,
+  ContentScriptNavigationResponse,
   ContentScriptProfileResponse,
   ContentScriptResponse,
   FollowedUserInput,
@@ -41,6 +42,12 @@ const heartbeatIntervalMs = 15_000;
 const themeAttributeFilter = ["class", "style", "data-theme", "data-color-scheme", "data-color-mode", "data-scheme"];
 const schemeLinkSelector = "link.light-scheme, link.dark-scheme";
 type PageTheme = "light" | "dark";
+type NavigationDeps = {
+  currentHref?: () => string;
+  clickLink?: (href: string) => void;
+  assign?: (href: string) => void;
+  delay?: () => Promise<void>;
+};
 
 let userMenuRoot: Root | null = null;
 let userMenuRootElement: HTMLElement | null = null;
@@ -1487,8 +1494,43 @@ function runContentScriptCommand(message: ContentScriptCommand): Promise<Content
   if (message.type === "linuxdoFriends.extractFollowing") return extractFollowingFromPage();
   if (message.type === "linuxdoFriends.extractProfile") return extractProfileFromPage(message.username);
   if (message.type === "linuxdoFriends.extractAvatar") return extractAvatarFromPage(message.username, message.avatarUrl);
+  if (message.type === "linuxdoFriends.navigateInPage") return navigateInPage(message.url);
   if (message.step) return extractActivityStepFromPage(message.username, message.step);
   return extractActivityFromPage(message.username, message.kind ?? "all");
+}
+
+export async function navigateInPage(url: string, deps: NavigationDeps = {}): Promise<ContentScriptNavigationResponse> {
+  let target: URL;
+  try {
+    target = new URL(url, "https://linux.do");
+  } catch {
+    return { ok: false, reason: "unavailable", error: "动态地址无效。" };
+  }
+  if (target.origin !== "https://linux.do") {
+    return { ok: false, reason: "unavailable", error: "只能在 linux.do 页面内跳转站内动态。" };
+  }
+
+  const before = deps.currentHref?.() ?? window.location.href;
+  const relativeHref = `${target.pathname}${target.search}${target.hash}`;
+  const clickLink = deps.clickLink ?? clickInSiteLink;
+  const assign = deps.assign ?? ((href: string) => window.location.assign(href));
+  const delay = deps.delay ?? (() => new Promise<void>((resolve) => window.setTimeout(resolve, 0)));
+  clickLink(relativeHref);
+  await delay();
+  if ((deps.currentHref?.() ?? window.location.href) === before) {
+    assign(target.href);
+  }
+  return { ok: true, url: target.href };
+}
+
+function clickInSiteLink(href: string) {
+  const link = document.createElement("a");
+  link.href = href;
+  link.dataset.linuxdoFriendsNavigation = "true";
+  link.style.display = "none";
+  document.body.append(link);
+  link.click();
+  link.remove();
 }
 
 async function extractCurrentAccountFromPage(): Promise<ContentScriptCurrentAccountResponse> {
@@ -1637,6 +1679,7 @@ function isContentScriptCommand(value: unknown): value is ContentScriptCommand {
   const message = value as { type?: unknown; username?: unknown; kind?: unknown; avatarUrl?: unknown; step?: unknown };
   if (message.type === "linuxdoFriends.extractCurrentAccount") return true;
   if (message.type === "linuxdoFriends.extractFollowing") return true;
+  if (message.type === "linuxdoFriends.navigateInPage") return typeof (message as { url?: unknown }).url === "string";
   if (message.type === "linuxdoFriends.extractAvatar") {
     return typeof message.username === "string" && message.username.trim().length > 0 && typeof message.avatarUrl === "string";
   }

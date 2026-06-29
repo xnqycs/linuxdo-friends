@@ -199,16 +199,16 @@ describe("content script friend markers", () => {
       }
     });
 
-    await import("./contentScript");
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(100);
+    const { syncPageTheme } = await import("./contentScript");
+    await flushContentScriptAsyncWork();
+    syncPageTheme();
+    await vi.waitFor(() => expect(getComputedStyleSpy).toHaveBeenCalled());
     getComputedStyleSpy.mockClear();
     document.getElementById("ordinary-node")?.setAttribute("class", "dark");
-    await Promise.resolve();
+    const themeBefore = document.documentElement.dataset.linuxdoFriendsTheme;
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(getComputedStyleSpy).not.toHaveBeenCalled();
-    expect(document.documentElement.dataset.linuxdoFriendsTheme).toBe("light");
+    expect(document.documentElement.dataset.linuxdoFriendsTheme).toBe(themeBefore);
     vi.useRealTimers();
   });
 
@@ -259,16 +259,15 @@ describe("content script friend markers", () => {
       }
     });
 
-    const { scheduleFriendMarkers } = await import("./contentScript");
+    await import("./contentScript");
     await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ type: "getState" }));
+    await flushContentScriptAsyncWork();
     await waitForFriendMark("#initial-neil");
     document.getElementById("main-outlet")?.insertAdjacentHTML(
       "beforeend",
       '<a id="routed-neil" href="/u/neil"><img class="avatar" src="/user_avatar/linux.do/neil/48/1.png" alt="">Neo</a>'
     );
     window.history.pushState({}, "", "/u/neil");
-    scheduleFriendMarkers();
-    await vi.advanceTimersByTimeAsync(100);
     await waitForFriendMark("#routed-neil");
 
     const friendLink = document.querySelector<HTMLAnchorElement>("#routed-neil");
@@ -1610,6 +1609,46 @@ describe("content script friend markers", () => {
     expect(response).toMatchObject({ ok: false, reason: "challenge" });
     expect(fetch).toHaveBeenCalledWith("/u/misaka7369.json", expect.objectContaining({ credentials: "same-origin" }));
   });
+
+  it("navigates linux.do activity links through an in-site click before falling back to assign", async () => {
+    const clickLink = vi.fn();
+    const assign = vi.fn();
+    const { navigateInPage } = await import("./contentScript");
+
+    const response = await navigateInPage("https://linux.do/t/topic/1/2", {
+      currentHref: () => "https://linux.do/latest",
+      clickLink,
+      assign,
+      delay: async () => undefined
+    });
+
+    expect(response).toEqual({ ok: true, url: "https://linux.do/t/topic/1/2" });
+    expect(clickLink).toHaveBeenCalledWith("/t/topic/1/2");
+    expect(assign).toHaveBeenCalledWith("https://linux.do/t/topic/1/2");
+  });
+
+  it("does not fall back to assign when the in-site click changes location", async () => {
+    const clickLink = vi.fn();
+    const assign = vi.fn();
+    const { navigateInPage } = await import("./contentScript");
+
+    const response = await navigateInPage("/t/topic/1/2", {
+      currentHref: vi.fn().mockReturnValueOnce("https://linux.do/latest").mockReturnValueOnce("https://linux.do/t/topic/1/2"),
+      clickLink,
+      assign,
+      delay: async () => undefined
+    });
+
+    expect(response).toEqual({ ok: true, url: "https://linux.do/t/topic/1/2" });
+    expect(clickLink).toHaveBeenCalledWith("/t/topic/1/2");
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("rejects in-page navigation outside linux.do", async () => {
+    const { navigateInPage } = await import("./contentScript");
+
+    await expect(navigateInPage("https://example.com/t/topic/1")).resolves.toMatchObject({ ok: false, reason: "unavailable" });
+  });
 });
 
 function createMockLocalStorage() {
@@ -1627,11 +1666,17 @@ function createMockLocalStorage() {
 }
 
 async function waitForFriendMark(selector: string) {
-  for (let index = 0; index < 5; index += 1) {
-    await Promise.resolve();
+  for (let index = 0; index < 20; index += 1) {
+    await flushContentScriptAsyncWork();
     await vi.advanceTimersByTimeAsync(100);
     if (document.querySelector(selector)?.querySelector(".linuxdo-friends-name-mark")) return;
   }
+  throw new Error(`Friend mark not found: ${selector}`);
+}
+
+async function flushContentScriptAsyncWork() {
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 function isHeartbeatMessage(value: unknown): boolean {

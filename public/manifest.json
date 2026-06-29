@@ -24,6 +24,15 @@
         "content-script.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://linuxdo-cloud-save.lafish.workers.dev/auth/complete/browser_code*"
+      ],
+      "js": [
+        "cloud-save-complete.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "permissions": [
@@ -34,6 +43,7 @@
   "host_permissions": [
     "https://api.github.com/*",
     "https://github-api.lafish.workers.dev/*",
+    "https://linuxdo-cloud-save.lafish.workers.dev/*",
     "https://linux.do/*"
   ]
 }

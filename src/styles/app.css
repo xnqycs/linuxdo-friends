@@ -872,11 +872,29 @@ input[type="checkbox"] {
   line-height: 1.5;
 }
 
+.settings-divider {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border-muted);
+}
+
 .spin-icon {
   animation: spin 900ms linear infinite;
 }
 
+.auto-refresh-wait-icon {
+  color: var(--accent-strong);
+  animation: auto-refresh-wait-spin 3.6s linear infinite;
+  opacity: 0.9;
+}
+
 @keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes auto-refresh-wait-spin {
   to {
     transform: rotate(360deg);
   }
@@ -997,6 +1015,15 @@ input[type="checkbox"] {
 .danger-action:hover:not(:disabled) {
   border-color: var(--danger);
   background: var(--danger-hover);
+}
+
+.inline-link-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: underline;
 }
 
 .visually-hidden-file {
@@ -1647,36 +1674,95 @@ input[type="checkbox"] {
 }
 
 .scope-select-trigger {
-  display: inline-grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  display: inline-flex;
   align-items: center;
-  width: min(168px, 42vw);
+  justify-content: center;
+  width: 64px;
+  height: 34px;
   min-width: 0;
-  gap: 5px;
+  gap: 3px;
+  padding: 3px 4px;
   border-color: var(--border);
   background: var(--surface-muted);
   color: var(--text);
-  text-align: left;
+  text-align: center;
 }
 
-.scope-select-trigger span,
-.scope-select-trigger strong {
+.scope-trigger-card {
+  display: grid;
+  width: 36px;
+  min-width: 0;
+  grid-template-columns: repeat(2, 16px);
+  grid-auto-rows: 16px;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.scope-trigger-card.is-empty {
+  display: flex;
+}
+
+.scope-trigger-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  line-height: 1;
+}
+
+.scope-trigger-icon svg {
+  flex: 0 0 auto;
+}
+
+.scope-trigger-icon.kind-topic {
+  border-color: var(--topic-border);
+  background: var(--topic-bg);
+  color: var(--topic-text);
+}
+
+.scope-trigger-icon.kind-reply {
+  border-color: var(--reply-border);
+  background: var(--reply-bg);
+  color: var(--reply-text);
+}
+
+.scope-trigger-icon.kind-boost {
+  border-color: var(--boost-border);
+  background: var(--boost-bg);
+  color: var(--boost-text);
+}
+
+.scope-trigger-icon.kind-reaction {
+  border-color: var(--reaction-border);
+  background: var(--reaction-bg);
+  color: var(--reaction-text);
+}
+
+.scope-trigger-empty {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
   white-space: nowrap;
 }
 
-.scope-select-trigger span {
+.scope-trigger-arrow {
+  flex: 0 0 auto;
   color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.scope-select-trigger strong {
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .scope-select-menu {

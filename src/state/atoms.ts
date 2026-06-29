@@ -320,6 +320,15 @@ export const openLinuxDoHomeAtom = atom(null, async (get, set) => {
   }
 });
 
+export const openActivityLinkAtom = atom(null, async (_get, set, url: string) => {
+  const response = await sendCommand<PageRepairResult>({ type: "openActivityLink", url });
+  if (response.ok) {
+    set(statusMessageAtom, null);
+  } else {
+    set(statusMessageAtom, response.error);
+  }
+});
+
 export const openSidePanelAtom = atom(null, async (_get, set) => {
   const response = await sendCommand<{ message: string }>({ type: "openSidePanel" });
   if (response.ok) {
@@ -403,9 +412,16 @@ function mergeObservedAppState(stored: Partial<AppState>): AppState {
     activityWatermarks: stored.activityWatermarks ?? {},
     activityFeedWaterlineAt: stored.activityFeedWaterlineAt,
     avatarCache: stored.avatarCache ?? {},
-    settings: stored.settings ?? defaultAppState.settings,
+    settings: mergeObservedSettings(stored.settings),
     currentAccount: stored.currentAccount,
     lastSync: stored.lastSync
+  };
+}
+
+function mergeObservedSettings(settings: Partial<AppState["settings"]> | undefined): AppState["settings"] {
+  return {
+    ...defaultAppState.settings,
+    ...(settings ?? {})
   };
 }
 

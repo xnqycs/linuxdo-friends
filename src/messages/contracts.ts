@@ -10,6 +10,14 @@ export function isBackgroundCommand(value: unknown): value is BackgroundCommand 
     case "getSiteDataProgress":
     case "getPageScriptStatus":
     case "getUpdateCheck":
+    case "getCloudConfigStatus":
+    case "bindCloudSave":
+      return true;
+    case "cloudSaveExchangeCode":
+      return typeof command.code === "string" && command.code.trim().length > 0;
+    case "backupCloudConfig":
+    case "restoreCloudConfig":
+    case "clearCloudBinding":
     case "openSidePanel":
     case "openOptionsPage":
     case "openLinuxDoHome":
@@ -17,6 +25,8 @@ export function isBackgroundCommand(value: unknown): value is BackgroundCommand 
     case "clearCache":
     case "resetExtension":
       return true;
+    case "openActivityLink":
+      return typeof command.url === "string" && isLinuxDoActivityUrl(command.url);
     case "importConfig":
       return isNonEmptyString(command.json);
     case "checkForUpdates":
@@ -84,8 +94,18 @@ function isSettingsPatch(value: unknown): boolean {
   return (
     (value.allowAutoRefresh === undefined || typeof value.allowAutoRefresh === "boolean") &&
     (value.allowInactiveTabFallback === undefined || typeof value.allowInactiveTabFallback === "boolean") &&
+    (value.openActivityLinksInPage === undefined || typeof value.openActivityLinksInPage === "boolean") &&
     (value.refreshIntervalMinutes === undefined || isValidRefreshInterval(value.refreshIntervalMinutes))
   );
+}
+
+function isLinuxDoActivityUrl(value: string): boolean {
+  try {
+    const url = new URL(value, "https://linux.do");
+    return url.protocol === "https:" && url.hostname === "linux.do" && (value.startsWith("/") || url.origin === "https://linux.do");
+  } catch {
+    return false;
+  }
 }
 
 function isValidRefreshInterval(value: unknown): boolean {
