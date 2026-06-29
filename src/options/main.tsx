@@ -29,7 +29,7 @@ import type {
 import { CLOUD_AUTH_STORAGE_KEY } from "../storage/cloudAuthStorage";
 import "../styles/app.css";
 
-const LDC_SPONSOR_20_URL = "https://credit.linux.do/paying/online?token=276b84998e7864428f277f6d7260f7e65e8c531cda5413cb061ff4a91cc3caa4";
+const LDC_SPONSOR_20_URL = "https://credit.linux.do/paying/online?token=3b78efe60d34a77c55d52e84d60e33270b5cc69f7aa8979bbab4d1b41b6f95b7";
 const LDC_SPONSOR_200_URL = "https://credit.linux.do/paying/online?token=276b84998e7864428f277f6d7260f7e65e8c531cda5413cb061ff4a91cc3caa4";
 
 export function OptionsApp() {

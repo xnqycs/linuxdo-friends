@@ -327,7 +327,7 @@ describe("OptionsApp update diagnostics", () => {
     expect(container.textContent).not.toContain("赞助本项目 LDC");
     expect(sponsorLinks.map((link) => link.textContent?.trim())).toEqual(["20 LDC", "200 LDC"]);
     expect(sponsorLinks.map((link) => link.href)).toEqual([
-      "https://credit.linux.do/paying/online?token=276b84998e7864428f277f6d7260f7e65e8c531cda5413cb061ff4a91cc3caa4",
+      "https://credit.linux.do/paying/online?token=3b78efe60d34a77c55d52e84d60e33270b5cc69f7aa8979bbab4d1b41b6f95b7",
       "https://credit.linux.do/paying/online?token=276b84998e7864428f277f6d7260f7e65e8c531cda5413cb061ff4a91cc3caa4"
     ]);
     expect(sponsorLinks.every((link) => link.target === "_blank")).toBe(true);
