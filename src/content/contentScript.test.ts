@@ -4,11 +4,31 @@ import { extractFriendProfile } from "../api/profileParser";
 import { defaultAppState } from "../domain/defaultState";
 import { addFriendFromProfile } from "../domain/friends";
 
+const nativePushState = window.history.pushState;
+const nativeReplaceState = window.history.replaceState;
+
 describe("content script friend markers", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.resetModules();
     vi.unstubAllGlobals();
+    window.history.pushState = nativePushState;
+    window.history.replaceState = nativeReplaceState;
+    document.head.innerHTML = "";
+    document.documentElement.removeAttribute("class");
+    document.documentElement.removeAttribute("style");
+    document.documentElement.removeAttribute("data-theme");
+    document.documentElement.removeAttribute("data-color-scheme");
+    document.documentElement.removeAttribute("data-color-mode");
+    document.documentElement.removeAttribute("data-scheme");
+    document.documentElement.removeAttribute("data-linuxdo-friends-theme");
     document.body.innerHTML = "";
+    document.body.removeAttribute("class");
+    document.body.removeAttribute("style");
+    document.body.removeAttribute("data-theme");
+    document.body.removeAttribute("data-color-scheme");
+    document.body.removeAttribute("data-color-mode");
+    document.body.removeAttribute("data-scheme");
   });
 
   it("marks only known friends and remains idempotent", async () => {
@@ -219,6 +239,7 @@ describe("content script friend markers", () => {
     });
     document.body.innerHTML = `
       <main id="main-outlet">
+        <a id="initial-neil" href="/u/neil"><img class="avatar" src="/user_avatar/linux.do/neil/48/1.png" alt="">Neo</a>
         <a href="/u/other">Other</a>
       </main>
     `;
@@ -238,18 +259,19 @@ describe("content script friend markers", () => {
       }
     });
 
-    await import("./contentScript");
+    const { scheduleFriendMarkers } = await import("./contentScript");
     await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ type: "getState" }));
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(0);
+    await waitForFriendMark("#initial-neil");
     document.getElementById("main-outlet")?.insertAdjacentHTML(
       "beforeend",
-      '<a href="/u/neil"><img class="avatar" src="/user_avatar/linux.do/neil/48/1.png" alt="">Neo</a>'
+      '<a id="routed-neil" href="/u/neil"><img class="avatar" src="/user_avatar/linux.do/neil/48/1.png" alt="">Neo</a>'
     );
     window.history.pushState({}, "", "/u/neil");
+    scheduleFriendMarkers();
     await vi.advanceTimersByTimeAsync(100);
+    await waitForFriendMark("#routed-neil");
 
-    const friendLink = document.querySelector<HTMLAnchorElement>('a[href="/u/neil"]');
+    const friendLink = document.querySelector<HTMLAnchorElement>("#routed-neil");
     expect(friendLink?.querySelector(".linuxdo-friends-name-mark")?.textContent).toBe("Neo");
     expect(friendLink?.querySelector("img")?.classList.contains("linuxdo-friends-friend-avatar")).toBe(true);
     vi.useRealTimers();
@@ -1225,6 +1247,14 @@ describe("content script friend markers", () => {
         .mockResolvedValueOnce(
           new Response(
             JSON.stringify({
+              user_actions: []
+            }),
+            { status: 200 }
+          )
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
               user_actions: [
                 {
                   id: 42,
@@ -1297,16 +1327,21 @@ describe("content script friend markers", () => {
     });
     expect(fetch).toHaveBeenNthCalledWith(
       1,
-      "/user_actions.json?offset=0&username=misaka7369&filter=4,5",
+      "/user_actions.json?offset=0&username=misaka7369&filter=4",
       expect.objectContaining({ credentials: "same-origin" })
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      "/discourse-boosts/users/misaka7369/boosts-given.json",
+      "/user_actions.json?offset=0&username=misaka7369&filter=5",
       expect.objectContaining({ credentials: "same-origin" })
     );
     expect(fetch).toHaveBeenNthCalledWith(
       3,
+      "/discourse-boosts/users/misaka7369/boosts-given.json",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
       "/discourse-reactions/posts/reactions.json?username=misaka7369",
       expect.objectContaining({ credentials: "same-origin" })
     );
@@ -1491,6 +1526,7 @@ describe("content script friend markers", () => {
       vi
         .fn()
         .mockResolvedValueOnce(new Response(JSON.stringify(userActionsPayload), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(userActionsPayload), { status: 200 }))
         .mockResolvedValueOnce(new Response(JSON.stringify(boostsPayload), { status: 200 }))
         .mockResolvedValueOnce(new Response(JSON.stringify(reactionsPayload), { status: 200 }))
     );
@@ -1588,6 +1624,14 @@ function createMockLocalStorage() {
       }
     }
   };
+}
+
+async function waitForFriendMark(selector: string) {
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100);
+    if (document.querySelector(selector)?.querySelector(".linuxdo-friends-name-mark")) return;
+  }
 }
 
 function isHeartbeatMessage(value: unknown): boolean {

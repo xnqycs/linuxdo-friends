@@ -1,7 +1,8 @@
 export function createMockStorage(initial: Record<string, unknown> = {}) {
   const store = { ...initial };
   return {
-    async get(key: string | string[]) {
+    async get(key: string | string[] | null) {
+      if (key === null) return { ...store };
       if (Array.isArray(key)) {
         return Object.fromEntries(key.map((item) => [item, store[item]]));
       }

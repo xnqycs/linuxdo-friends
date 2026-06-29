@@ -415,7 +415,7 @@ function wrapHistoryMethod(method: "pushState" | "replaceState") {
   } as History[typeof method];
 }
 
-function scheduleFriendMarkers() {
+export function scheduleFriendMarkers() {
   if (typeof window === "undefined" || !latestState) return;
   if (friendMarkerTimer != null) return;
   friendMarkerTimer = window.setTimeout(() => {
@@ -1910,7 +1910,8 @@ function activityRequestStepsForUser(username: Username, kind: ActivityKindFilte
     return [{ username, kind: "user_actions", path: `/user_actions.json?offset=0&username=${encodeURIComponent(username)}&filter=4,5` }];
   }
   return [
-    { username, kind: "user_actions", path: `/user_actions.json?offset=0&username=${encodeURIComponent(username)}&filter=4,5` },
+    { username, kind: "topic", path: `/user_actions.json?offset=0&username=${encodeURIComponent(username)}&filter=4` },
+    { username, kind: "reply", path: `/user_actions.json?offset=0&username=${encodeURIComponent(username)}&filter=5` },
     { username, kind: "boost", path: `/discourse-boosts/users/${encodeURIComponent(username)}/boosts-given.json` },
     { username, kind: "reaction", path: `/discourse-reactions/posts/reactions.json?username=${encodeURIComponent(username)}` }
   ];

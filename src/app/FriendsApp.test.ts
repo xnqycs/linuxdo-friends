@@ -7,7 +7,9 @@ import { defaultAppState } from "../domain/defaultState";
 import { createMockStorage } from "../test/mockStorage";
 import { SITE_DATA_PROGRESS_STORAGE_KEY } from "../storage/siteDataProgressStorage";
 import { uiSceneStorageKeys } from "../storage/uiSceneStorage";
+import { AUTO_REFRESH_SESSION_STORAGE_KEY, loadAutoRefreshSessionState } from "../storage/autoRefreshSessionStorage";
 import { resetRuntimeObserversForTest } from "../state/atoms";
+import { resetAutoRefreshSessionObserverForTest } from "../state/autoRefreshAtoms";
 import { resetUiSceneObserverForTest } from "../state/uiSceneAtoms";
 import type { SiteDataTaskProgress } from "../shared/types";
 import { eventHappenedInside } from "./FriendsApp";
@@ -58,6 +60,7 @@ describe("FriendsApp UI scene persistence", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     resetRuntimeObserversForTest();
+    resetAutoRefreshSessionObserverForTest();
     resetUiSceneObserverForTest();
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   });
@@ -217,6 +220,306 @@ describe("FriendsApp UI scene persistence", () => {
     const { container } = await renderFriendsApp("in-page");
 
     expect(getButton(container, "@neo").disabled).toBe(true);
+  });
+
+  it("renders friend status auto-refresh controls in the split refresh menu", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    setupChrome({ session });
+    const { container } = await renderFriendsApp("side-panel");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".split-refresh-toggle")?.click();
+    });
+
+    expect(container.textContent).toContain("自动刷新");
+    expect(container.textContent).toContain("1 分钟");
+    expect(container.textContent).toContain("10 分钟");
+    expect(container.textContent).toContain("30 分钟");
+    expect(container.textContent).toContain("遇到验证、限流或正在刷新会跳过");
+  });
+
+  it("writes session-only auto-refresh state from the friend status menu", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    setupChrome({ session });
+    const { container } = await renderFriendsApp("side-panel");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".split-refresh-toggle")?.click();
+    });
+    await act(async () => {
+      const radios = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="radio"]'));
+      radios.find((radio) => radio.parentElement?.textContent?.includes("1 分钟"))?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click();
+    });
+
+    expect(await loadAutoRefreshSessionState(session)).toMatchObject({
+      enabled: true,
+      intervalMinutes: 1
+    });
+  });
+
+  it("does not duplicate auto-refresh requests across two mounted surfaces", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-28T00:00:00.000Z"));
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1
+    });
+    const chromeMock = setupChrome({ session });
+    await renderFriendsApp("side-panel");
+    await renderFriendsApp("in-page");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const registeredSession = await loadAutoRefreshSessionState(session);
+    expect(Object.keys(registeredSession.visibleSurfaces)).toHaveLength(2);
+    await session.set({
+      [AUTO_REFRESH_SESSION_STORAGE_KEY]: {
+        ...registeredSession,
+        enabled: true,
+        intervalMinutes: 1,
+        lastFinishedAt: "2026-06-28T00:00:00.000Z",
+        updatedAt: "2026-06-28T00:00:00.000Z"
+      }
+    });
+    expect(await loadAutoRefreshSessionState(session)).toMatchObject({
+      enabled: true,
+      intervalMinutes: 1
+    });
+    const enabledSession = session.dump()[AUTO_REFRESH_SESSION_STORAGE_KEY];
+    await act(async () => {
+      chromeMock.emitStorageChange(
+        {
+          [AUTO_REFRESH_SESSION_STORAGE_KEY]: {
+            oldValue: null,
+            newValue: enabledSession
+          }
+        },
+        "session"
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.resolve();
+    });
+
+    const profileRefreshCalls = chromeMock.sendMessage.mock.calls.filter(([message]) => message.type === "refreshFriendProfiles");
+    expect(profileRefreshCalls).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it("skips a due auto-refresh while another site-data task is running without queuing it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-28T00:00:00.000Z"));
+    const runningActivity: SiteDataTaskProgress = {
+      taskId: "activity-live",
+      taskType: "activity",
+      scope: { kind: "all" },
+      status: "running",
+      completed: 0,
+      total: 4,
+      startedAt: "2026-06-28T00:00:00.000Z",
+      updatedAt: "2026-06-28T00:00:00.000Z",
+      source: "existing_tab"
+    };
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({ session, progress: runningActivity });
+    await renderFriendsApp("side-panel");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const registeredSession = await loadAutoRefreshSessionState(session);
+    await session.set({
+      [AUTO_REFRESH_SESSION_STORAGE_KEY]: {
+        ...registeredSession,
+        enabled: true,
+        intervalMinutes: 1,
+        lastFinishedAt: "2026-06-28T00:00:00.000Z",
+        updatedAt: "2026-06-28T00:00:00.000Z"
+      }
+    });
+    const enabledSession = session.dump()[AUTO_REFRESH_SESSION_STORAGE_KEY];
+    await act(async () => {
+      chromeMock.emitStorageChange(
+        {
+          [AUTO_REFRESH_SESSION_STORAGE_KEY]: {
+            oldValue: null,
+            newValue: enabledSession
+          }
+        },
+        "session"
+      );
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.resolve();
+    });
+    expect(chromeMock.sendMessage.mock.calls.filter(([message]) => message.type === "refreshFriendProfiles")).toHaveLength(0);
+
+    await act(async () => {
+      chromeMock.emitStorageChange(
+        {
+          [SITE_DATA_PROGRESS_STORAGE_KEY]: {
+            oldValue: runningActivity,
+            newValue: {
+              ...runningActivity,
+              status: "success",
+              completed: 4,
+              updatedAt: "2026-06-28T00:01:05.000Z",
+              finishedAt: "2026-06-28T00:01:05.000Z"
+            } satisfies SiteDataTaskProgress
+          }
+        },
+        "session"
+      );
+      await Promise.resolve();
+    });
+    expect(await loadAutoRefreshSessionState(session)).toMatchObject({
+      lastFinishedAt: "2026-06-28T00:01:05.000Z"
+    });
+    expect(chromeMock.sendMessage.mock.calls.filter(([message]) => message.type === "refreshFriendProfiles")).toHaveLength(0);
+
+    vi.setSystemTime(new Date("2026-06-28T00:01:05.000Z"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_000);
+      await Promise.resolve();
+    });
+    expect(chromeMock.sendMessage.mock.calls.filter(([message]) => message.type === "refreshFriendProfiles")).toHaveLength(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await Promise.resolve();
+    });
+    expect(chromeMock.sendMessage.mock.calls.filter(([message]) => message.type === "refreshFriendProfiles")).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
+  it("records local auto-refresh completion when no shared profile progress finish arrives", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-28T00:00:00.000Z"));
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({ session });
+    await renderFriendsApp("side-panel");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const registeredSession = await loadAutoRefreshSessionState(session);
+    await session.set({
+      [AUTO_REFRESH_SESSION_STORAGE_KEY]: {
+        ...registeredSession,
+        enabled: true,
+        intervalMinutes: 1,
+        enabledAt: "2026-06-28T00:00:00.000Z",
+        updatedAt: "2026-06-28T00:00:00.000Z"
+      }
+    });
+    const enabledSession = session.dump()[AUTO_REFRESH_SESSION_STORAGE_KEY];
+    await act(async () => {
+      chromeMock.emitStorageChange(
+        {
+          [AUTO_REFRESH_SESSION_STORAGE_KEY]: {
+            oldValue: null,
+            newValue: enabledSession
+          }
+        },
+        "session"
+      );
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.resolve();
+    });
+
+    expect(chromeMock.sendMessage.mock.calls.filter(([message]) => message.type === "refreshFriendProfiles")).toHaveLength(1);
+    expect(await loadAutoRefreshSessionState(session)).toMatchObject({
+      lastFinishedAt: "2026-06-28T00:01:00.000Z"
+    });
+    vi.useRealTimers();
+  });
+
+  it("does not reuse stale shared profile progress as auto-refresh completion", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-28T00:00:00.000Z"));
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({ session });
+    await renderFriendsApp("side-panel");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      chromeMock.emitStorageChange(
+        {
+          [SITE_DATA_PROGRESS_STORAGE_KEY]: {
+            oldValue: null,
+            newValue: {
+              taskId: "profiles-live",
+              taskType: "profiles",
+              usernames: ["neo"],
+              status: "success",
+              completed: 1,
+              total: 1,
+              startedAt: "2026-06-27T23:58:00.000Z",
+              updatedAt: "2026-06-27T23:59:00.000Z",
+              finishedAt: "2026-06-27T23:59:00.000Z",
+              source: "existing_tab"
+            } satisfies SiteDataTaskProgress
+          }
+        },
+        "session"
+      );
+    });
+    expect(await loadAutoRefreshSessionState(session)).toMatchObject({
+      lastFinishedAt: "2026-06-27T23:59:00.000Z"
+    });
+
+    const registeredSession = await loadAutoRefreshSessionState(session);
+    await session.set({
+      [AUTO_REFRESH_SESSION_STORAGE_KEY]: {
+        ...registeredSession,
+        enabled: true,
+        intervalMinutes: 1,
+        enabledAt: "2026-06-28T00:00:00.000Z",
+        updatedAt: "2026-06-28T00:00:00.000Z",
+        lastFinishedAt: undefined
+      }
+    });
+    const enabledSession = session.dump()[AUTO_REFRESH_SESSION_STORAGE_KEY];
+    await act(async () => {
+      chromeMock.emitStorageChange(
+        {
+          [AUTO_REFRESH_SESSION_STORAGE_KEY]: {
+            oldValue: null,
+            newValue: enabledSession
+          }
+        },
+        "session"
+      );
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.resolve();
+    });
+
+    expect(await loadAutoRefreshSessionState(session)).toMatchObject({
+      lastFinishedAt: "2026-06-28T00:01:00.000Z"
+    });
+    vi.useRealTimers();
   });
 
   it("updates in-page refresh progress from shared session state changes", async () => {
@@ -462,6 +765,25 @@ describe("FriendsApp UI scene persistence", () => {
 
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "openOptionsPage" });
   });
+
+  it("opens options from the feed background refresh entrypoint without refreshing activity", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.tab]: "feed"
+    });
+    const chromeMock = setupChrome({ session });
+    const { container } = await renderFriendsApp("side-panel");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".split-refresh-toggle")?.click();
+    });
+    await act(async () => {
+      getButton(container, "去设置").click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "openOptionsPage" });
+    expect(chromeMock.sendMessage).not.toHaveBeenCalledWith({ type: "refreshFriendActivity", scope: { kind: "all" } });
+  });
 });
 
 async function renderFriendsApp(surface?: React.ComponentProps<typeof FriendsApp>["surface"]) {
@@ -557,6 +879,8 @@ function setupChrome({
     if (message.type === "openSidePanel") return { ok: true, data: { message: "已打开插件侧栏。" } };
     if (message.type === "openOptionsPage") return { ok: true, data: { message: "已打开配置页。" } };
     if (message.type === "updateFriend") return { ok: true, data: updateFriend(state, message.username, message.patch) };
+    if (message.type === "refreshFriendProfiles") return { ok: true, data: state };
+    if (message.type === "refreshFriendActivity") return { ok: true, data: state };
     return { ok: true, data: state };
   });
   vi.stubGlobal("chrome", {

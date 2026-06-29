@@ -130,24 +130,24 @@ export function OptionsApp() {
 
       <section className="panel">
         <h2>刷新策略</h2>
-        <label className="toggle">
-          <input type="checkbox" checked={false} disabled />
-          <span>低频自动刷新（后续版本）</span>
-        </label>
-        <label className="toggle">
-          <input type="checkbox" checked={false} disabled />
-          <span>后台非激活标签页 fallback（后续版本）</span>
-        </label>
-        <label className="field">
-          <span>刷新间隔（分钟）</span>
-          <input
-            type="number"
-            min={30}
-            max={720}
-            value={state.settings.refreshIntervalMinutes}
-            onChange={(event) => void updateSettings({ refreshIntervalMinutes: Number(event.target.value) })}
-          />
-        </label>
+        <div className="settings-placeholder">
+          <h3>佬友圈后台刷新</h3>
+          <p>后台刷新会在设置页统一配置，后续用于 webhook 和规则匹配。本版本只保留入口，不会在后台自动请求动态。</p>
+          <label className="toggle">
+            <input type="checkbox" checked={false} disabled />
+            <span>启用后台刷新（后续版本）</span>
+          </label>
+          <label className="field">
+            <span>刷新间隔（分钟）</span>
+            <input
+              type="number"
+              min={30}
+              max={720}
+              value={state.settings.refreshIntervalMinutes}
+              onChange={(event) => void updateSettings({ refreshIntervalMinutes: Number(event.target.value) })}
+            />
+          </label>
+        </div>
       </section>
 
       <section className="panel">
