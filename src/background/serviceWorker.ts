@@ -202,7 +202,7 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
     case "openSidePanel":
       return ok(await openSidePanel(sender));
     case "openOptionsPage":
-      return ok(await openOptionsPage());
+      return ok(await openOptionsPage(command.hash));
     case "openLinuxDoHome":
       return ok(await openLinuxDoHome());
     case "openActivityLink":
@@ -730,12 +730,12 @@ async function openSidePanel(sender: chrome.runtime.MessageSender): Promise<{ me
   throw new Error("没有找到可以打开侧栏的浏览器窗口。");
 }
 
-async function openOptionsPage(): Promise<{ message: string }> {
-  if (chrome.runtime.openOptionsPage) {
+async function openOptionsPage(hash?: string): Promise<{ message: string }> {
+  if (!hash && chrome.runtime.openOptionsPage) {
     await chrome.runtime.openOptionsPage();
     return { message: "已打开配置页。" };
   }
-  await chrome.tabs.create({ url: chrome.runtime.getURL("src/options/index.html"), active: true });
+  await chrome.tabs.create({ url: chrome.runtime.getURL(`src/options/index.html${hash ?? ""}`), active: true });
   return { message: "已打开配置页。" };
 }
 

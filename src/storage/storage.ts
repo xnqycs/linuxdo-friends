@@ -70,7 +70,8 @@ function mergeSettings(stored?: Partial<RefreshSettings>): RefreshSettings {
   return {
     ...defaultAppState.settings,
     refreshIntervalMinutes,
-    openActivityLinksInPage: stored?.openActivityLinksInPage === true,
+    openActivityLinksInPage:
+      typeof stored?.openActivityLinksInPage === "boolean" ? stored.openActivityLinksInPage : defaultAppState.settings.openActivityLinksInPage,
     allowAutoRefresh: false,
     allowInactiveTabFallback: false
   };

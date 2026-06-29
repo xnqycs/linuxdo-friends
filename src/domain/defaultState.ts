@@ -3,7 +3,7 @@ import type { AppState, RefreshSettings } from "../shared/types";
 export const defaultSettings: RefreshSettings = {
   allowAutoRefresh: false,
   allowInactiveTabFallback: false,
-  openActivityLinksInPage: false,
+  openActivityLinksInPage: true,
   refreshIntervalMinutes: 120
 };
 

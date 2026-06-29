@@ -19,12 +19,13 @@ export function isBackgroundCommand(value: unknown): value is BackgroundCommand 
     case "restoreCloudConfig":
     case "clearCloudBinding":
     case "openSidePanel":
-    case "openOptionsPage":
     case "openLinuxDoHome":
     case "exportConfig":
     case "clearCache":
     case "resetExtension":
       return true;
+    case "openOptionsPage":
+      return command.hash === undefined || isOptionsHash(command.hash);
     case "openActivityLink":
       return typeof command.url === "string" && isLinuxDoActivityUrl(command.url);
     case "importConfig":
@@ -106,6 +107,10 @@ function isLinuxDoActivityUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isOptionsHash(value: unknown): boolean {
+  return typeof value === "string" && /^#[a-z0-9-]+$/i.test(value);
 }
 
 function isValidRefreshInterval(value: unknown): boolean {

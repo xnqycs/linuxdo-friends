@@ -109,6 +109,7 @@ describe("config transfer", () => {
 
     expect(file.friends.legacy.activityKinds).toEqual(["topic", "reply", "boost", "reaction"]);
     expect(file.friends.quiet.activityKinds).toEqual([]);
+    expect(file.settings.openActivityLinksInPage).toBe(true);
   });
 
   it("rejects invalid import files", () => {

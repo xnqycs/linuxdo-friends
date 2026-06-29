@@ -8,7 +8,9 @@ const nativePushState = window.history.pushState;
 const nativeReplaceState = window.history.replaceState;
 
 describe("content script friend markers", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    const previousModule = await import("./contentScript").catch(() => null);
+    previousModule?.resetContentScriptForTest?.();
     vi.useRealTimers();
     vi.resetModules();
     vi.unstubAllGlobals();

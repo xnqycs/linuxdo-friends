@@ -11,7 +11,7 @@ import { AUTO_REFRESH_SESSION_STORAGE_KEY, loadAutoRefreshSessionState } from ".
 import { resetRuntimeObserversForTest } from "../state/atoms";
 import { resetAutoRefreshSessionObserverForTest } from "../state/autoRefreshAtoms";
 import { resetUiSceneObserverForTest } from "../state/uiSceneAtoms";
-import type { AppState, SiteDataTaskProgress } from "../shared/types";
+import type { AppState, CloudConfigStatusResult, SiteDataTaskProgress } from "../shared/types";
 import { eventHappenedInside, isLinuxDoActivityHref, shouldHandleActivityLinkClick } from "./FriendsApp";
 import { FriendsApp } from "./FriendsApp";
 
@@ -125,11 +125,12 @@ describe("FriendsApp UI scene persistence", () => {
 
   it("persists tab and modal query changes to session storage", async () => {
     const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    Object.defineProperty(window, "scrollTo", { value: vi.fn(), configurable: true });
     setupChrome({ session });
     const { container } = await renderFriendsApp();
 
     await act(async () => {
-      getButton(container, "我的佬").click();
+      getButton(container, "管理").click();
     });
     await act(async () => {
       getButton(container, "佬友圈").click();
@@ -147,6 +148,36 @@ describe("FriendsApp UI scene persistence", () => {
       [uiSceneStorageKeys.addFriendModalOpen]: true,
       [uiSceneStorageKeys.addFriendQuery]: "neo"
     });
+  });
+
+  it("scrolls to the feed top when switching to the feed tab", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    const scrollTo = vi.fn();
+    Object.defineProperty(window, "scrollTo", { value: scrollTo, configurable: true });
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function getRect(this: HTMLElement) {
+      if (this.classList.contains("sticky-top")) {
+        return { top: 0, left: 0, right: 320, bottom: 80, width: 320, height: 80, x: 0, y: 0, toJSON: () => ({}) };
+      }
+      return { top: 240, left: 0, right: 320, bottom: 300, width: 320, height: 60, x: 0, y: 240, toJSON: () => ({}) };
+    });
+    setupChrome({ session, state: activityFeedState() });
+    const { container } = await renderFriendsApp();
+
+    await act(async () => {
+      getButton(container, "佬友圈").click();
+    });
+    await act(async () => {
+      frameCallbacks.forEach((callback) => callback(0));
+    });
+
+    expect(raf).toHaveBeenCalled();
+    expect(scrollTo).toHaveBeenCalledWith({ top: 152, behavior: "smooth" });
+    rect.mockRestore();
   });
 
   it("resets a stale restored user filter to all", async () => {
@@ -191,7 +222,7 @@ describe("FriendsApp UI scene persistence", () => {
       container.querySelector<HTMLAnchorElement>(".kind-card.kind-topic")?.click();
     });
 
-    expect(chromeMock.sendMessage).not.toHaveBeenCalledWith({ type: "openActivityLink", url: "https://linux.do/t/topic/1" });
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "openActivityLink", url: "https://linux.do/t/topic/1" });
   });
 
   it("renders reply activity kind cards as narrow stacked controls", async () => {
@@ -243,12 +274,18 @@ describe("FriendsApp UI scene persistence", () => {
     expect(kindCard?.querySelector(".kind-card-link svg")).toBeTruthy();
   });
 
-  it("keeps feed activity links as normal new-tab anchors by default", async () => {
+  it("keeps feed activity links as normal new-tab anchors when configured", async () => {
     const session = createMockStorage({
       [uiSceneStorageKeys.version]: 1,
       [uiSceneStorageKeys.tab]: "feed"
     });
-    const chromeMock = setupChrome({ session, state: activityFeedState() });
+    const chromeMock = setupChrome({
+      session,
+      state: {
+        ...activityFeedState(),
+        settings: { ...defaultAppState.settings, openActivityLinksInPage: false }
+      }
+    });
     const { container } = await renderFriendsApp();
     const link = container.querySelector<HTMLAnchorElement>(".feed-title");
 
@@ -362,11 +399,12 @@ describe("FriendsApp UI scene persistence", () => {
       container.querySelector<HTMLButtonElement>(".split-refresh-toggle")?.click();
     });
 
-    expect(container.textContent).toContain("自动刷新");
+    expect(container.textContent).toContain("启用自动刷新");
     expect(container.textContent).toContain("1 分钟");
     expect(container.textContent).toContain("10 分钟");
     expect(container.textContent).toContain("30 分钟");
     expect(container.textContent).toContain("遇到验证、限流或正在刷新会跳过");
+    expect(container.querySelector(".refresh-menu")?.querySelectorAll("input")).toHaveLength(0);
   });
 
   it("writes session-only auto-refresh state from the friend status menu", async () => {
@@ -378,11 +416,10 @@ describe("FriendsApp UI scene persistence", () => {
       container.querySelector<HTMLButtonElement>(".split-refresh-toggle")?.click();
     });
     await act(async () => {
-      const radios = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="radio"]'));
-      radios.find((radio) => radio.parentElement?.textContent?.includes("1 分钟"))?.click();
+      getButton(container, "1 分钟").click();
     });
     await act(async () => {
-      container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.click();
+      getButton(container, "启用自动刷新").click();
     });
 
     expect(await loadAutoRefreshSessionState(session)).toMatchObject({
@@ -769,6 +806,34 @@ describe("FriendsApp UI scene persistence", () => {
     expect(container.querySelector(".spin-icon")).toBeTruthy();
   });
 
+  it("keeps bottom breathing space in both friends and feed tabs", async () => {
+    const friendsSession = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.tab]: "friends"
+    });
+    setupChrome({ session: friendsSession });
+    const friendsRender = await renderFriendsApp("side-panel");
+
+    expect(friendsRender.container.querySelector(".tab-bottom-spacer")).toBeTruthy();
+
+    act(() => {
+      friendsRender.root.unmount();
+    });
+
+    const feedSession = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.tab]: "feed"
+    });
+    setupChrome({ session: feedSession, state: activityFeedState() });
+    const feedRender = await renderFriendsApp("side-panel");
+
+    expect(feedRender.container.querySelector(".tab-bottom-spacer")).toBeTruthy();
+
+    act(() => {
+      feedRender.root.unmount();
+    });
+  });
+
   it("uses compact side-panel and settings launchers in the in-page header instead of the linked-session tag", async () => {
     const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
     const chromeMock = setupChrome({ session });
@@ -791,6 +856,32 @@ describe("FriendsApp UI scene persistence", () => {
     });
 
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "openOptionsPage" });
+  });
+
+  it("shows cloud binding status inside the account tag and opens cloud settings", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({ session });
+    const { container } = await renderFriendsApp("side-panel");
+
+    const cloudButton = container.querySelector<HTMLButtonElement>(".cloud-sync-chip");
+    expect(cloudButton?.classList.contains("is-unbound")).toBe(true);
+    expect(cloudButton?.querySelector(".cloud-sync-cross")).toBeTruthy();
+
+    await act(async () => {
+      cloudButton?.click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "openOptionsPage", hash: "#cloud-backup" });
+  });
+
+  it("uses a bright cloud icon when cloud config is bound", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    setupChrome({ session, cloudState: boundCloudState() });
+    const { container } = await renderFriendsApp("side-panel");
+
+    const cloudButton = container.querySelector<HTMLButtonElement>(".cloud-sync-chip");
+    expect(cloudButton?.classList.contains("is-bound")).toBe(true);
+    expect(cloudButton?.querySelector(".cloud-sync-cross")).toBeFalsy();
   });
 
   it("renders per-friend activity scope controls in the manage modal and updates scope", async () => {
@@ -823,7 +914,7 @@ describe("FriendsApp UI scene persistence", () => {
       trigger?.click();
     });
     await act(async () => {
-      const replyOption = Array.from(container.querySelectorAll<HTMLButtonElement>(".scope-select-menu button")).find((button) =>
+      const replyOption = Array.from(container.querySelectorAll<HTMLButtonElement>(".scope-select-menu > button")).find((button) =>
         button.textContent?.includes("回复")
       );
       replyOption?.click();
@@ -833,6 +924,48 @@ describe("FriendsApp UI scene persistence", () => {
       type: "updateFriend",
       username: "neo",
       patch: { activityKinds: ["boost"] }
+    });
+  });
+
+  it("offers all and none quick actions in the activity scope menu", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.addFriendModalOpen]: true
+    });
+    const chromeMock = setupChrome({
+      session,
+      state: updateFriend(
+        addFriendFromProfile(defaultAppState, {
+          username: "Neo",
+          name: "Neo",
+          refreshedAt: "2026-06-28T00:00:00.000Z"
+        }),
+        "neo",
+        { activityKinds: ["reply"] }
+      )
+    });
+    const { container } = await renderFriendsApp("side-panel");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".scope-select-trigger")?.click();
+    });
+    expect(container.querySelector(".scope-select-actions")).toBeTruthy();
+    await act(async () => {
+      getButton(container, "全不选").click();
+    });
+    await act(async () => {
+      getButton(container, "全选").click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({
+      type: "updateFriend",
+      username: "neo",
+      patch: { activityKinds: [] }
+    });
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({
+      type: "updateFriend",
+      username: "neo",
+      patch: { activityKinds: ["topic", "reply", "boost", "reaction"] }
     });
   });
 
@@ -860,6 +993,37 @@ describe("FriendsApp UI scene persistence", () => {
     expect(container.querySelector(".scope-trigger-icon")).toBeFalsy();
   });
 
+  it("disables the feed jump button when a friend has no activity scope", async () => {
+    const session = createMockStorage({ [uiSceneStorageKeys.version]: 1 });
+    const chromeMock = setupChrome({
+      session,
+      state: updateFriend(activityFeedState(), "neo", { activityKinds: [] })
+    });
+    const { container } = await renderFriendsApp("side-panel");
+    const arrowButton = container.querySelector<HTMLButtonElement>(".friend-arrow-button");
+
+    expect(arrowButton?.disabled).toBe(true);
+    expect(arrowButton?.title).toBe("未选择动态范围");
+    await act(async () => {
+      arrowButton?.click();
+    });
+
+    expect(chromeMock.sendMessage).not.toHaveBeenCalledWith({ type: "refreshFriendActivity", scope: { kind: "all", usernames: ["neo"] } });
+  });
+
+  it("shows a compact never-refreshed meta line on the activity refresh button", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.tab]: "feed"
+    });
+    setupChrome({ session, state: activityFeedState() });
+    const { container } = await renderFriendsApp("side-panel");
+
+    expect(container.querySelector(".refresh-button-label")?.textContent).toBe("刷新动态");
+    expect(container.querySelector(".refresh-button-meta")?.textContent).toBe("未曾刷新");
+    expect(container.textContent).not.toContain("全部佬朋友 全部动态未刷新");
+  });
+
   it("shows effective request counts in the activity type selector", async () => {
     const session = createMockStorage({
       [uiSceneStorageKeys.version]: 1,
@@ -880,11 +1044,31 @@ describe("FriendsApp UI scene persistence", () => {
     });
     const { container } = await renderFriendsApp("side-panel");
 
-    expect(container.textContent).toContain("全部 x 2");
-    expect(container.textContent).toContain("话题 x 0");
-    expect(container.textContent).toContain("回复 x 1");
-    expect(container.textContent).toContain("Boost x 1");
-    expect(container.textContent).toContain("回应 x 0");
+    expect(container.querySelector(".filter-popover-kind .filter-popover-menu")).toBeTruthy();
+    const options = Array.from(container.querySelectorAll<HTMLButtonElement>(".filter-popover-menu button"));
+    const optionText = options.map((option) => option.textContent?.trim());
+
+    expect(optionText).toEqual(["全部2", "话题0", "回复1", "Boost1", "回应0"]);
+    expect(container.textContent).not.toContain("x 2");
+    expect(container.textContent).not.toContain("x 0");
+    expect(container.querySelectorAll(".filter-popover-menu .filter-option-count")).toHaveLength(5);
+  });
+
+  it("shows the all-user filter as a compact label with a count tag", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.tab]: "feed",
+      [uiSceneStorageKeys.feedUserPopoverOpen]: true
+    });
+    setupChrome({ session, state: activityFeedState() });
+    const { container } = await renderFriendsApp("side-panel");
+
+    expect(container.querySelector(".filter-popover-user .filter-popover-menu")).toBeTruthy();
+    const userMenuOptions = Array.from(container.querySelectorAll<HTMLButtonElement>(".filter-popover-menu button"));
+
+    expect(userMenuOptions[0]?.textContent?.trim()).toBe("全部1");
+    expect(userMenuOptions[0]?.textContent).not.toContain("全部佬朋友");
+    expect(userMenuOptions[0]?.querySelector(".filter-option-count")?.textContent).toBe("1");
   });
 
   it("keeps the linked-session tag and settings launcher in the browser side panel surface", async () => {
@@ -1066,6 +1250,7 @@ function setupChrome({
     refreshedAt: "2026-06-28T00:00:00.000Z"
   }),
   identifyFails = false,
+  cloudState = unboundCloudState(),
   updateCheck = {
     installedVersion: "1.0.1",
     latestReleaseUrl: "https://github.com/LeUKi/linuxdo-friends/releases/latest",
@@ -1086,6 +1271,7 @@ function setupChrome({
   session: ReturnType<typeof createMockStorage>;
   state?: typeof defaultAppState;
   identifyFails?: boolean;
+  cloudState?: CloudConfigStatusResult;
   updateCheck?: {
     installedVersion: string;
     latestReleaseUrl: string;
@@ -1105,6 +1291,7 @@ function setupChrome({
     if (message.type === "getSiteDataProgress") return { ok: true, data: progress };
     if (message.type === "getUpdateCheck") return { ok: true, data: updateCheck };
     if (message.type === "checkForUpdates") return { ok: true, data: updateCheck };
+    if (message.type === "getCloudConfigStatus") return { ok: true, data: cloudState };
     if (message.type === "identifyCurrentAccount") {
       if (identifyFails) return { ok: false, error: "需要打开 linux.do 后识别。" };
       return {
@@ -1223,5 +1410,28 @@ function activityFeedState(url = "/t/topic/1"): AppState {
         ]
       }
     }
+  };
+}
+
+function unboundCloudState(): CloudConfigStatusResult {
+  return {
+    binding: { bound: false },
+    status: { state: "unchecked" },
+    message: "尚未绑定 linuxdo-cloud-save。"
+  };
+}
+
+function boundCloudState(): CloudConfigStatusResult {
+  return {
+    binding: {
+      bound: true,
+      app: "linuxdo-friends",
+      linuxDoId: "42",
+      tokenType: "Bearer",
+      tokenKind: "jwt",
+      boundAt: "2026-06-28T00:00:00.000Z"
+    },
+    status: { state: "remote_config", checkedAt: "2026-06-28T00:01:00.000Z", friendCount: 1 },
+    message: "云端配置：1 位佬朋友。"
   };
 }

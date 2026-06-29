@@ -64,6 +64,9 @@ let heartbeatTimer: number | null = null;
 let lastHeartbeatStatus: "pending" | "connected" | "disconnected" = "pending";
 let latestState: AppState | null = null;
 let lastPageTheme: PageTheme | null = null;
+let routePopstateListener: (() => void) | null = null;
+let originalPushState: History["pushState"] | null = null;
+let originalReplaceState: History["replaceState"] | null = null;
 
 void init();
 subscribeToStorageChanges();
@@ -404,16 +407,19 @@ function nodeContainsPageThemeTarget(node: Node): boolean {
 }
 
 function startRouteTracking() {
-  window.addEventListener("popstate", () => {
+  routePopstateListener = () => {
     scheduleFriendMarkers();
     scheduleFriendActions();
-  });
+  };
+  window.addEventListener("popstate", routePopstateListener);
   wrapHistoryMethod("pushState");
   wrapHistoryMethod("replaceState");
 }
 
 function wrapHistoryMethod(method: "pushState" | "replaceState") {
   const original = window.history[method];
+  if (method === "pushState") originalPushState = original;
+  if (method === "replaceState") originalReplaceState = original;
   window.history[method] = function patchedHistoryMethod(this: History, ...args: Parameters<History[typeof method]>) {
     const result = original.apply(this, args);
     scheduleFriendMarkers();
@@ -1793,6 +1799,44 @@ function readString(record: Record<string, unknown>, key: string): string | unde
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value != null && !Array.isArray(value);
+}
+
+export function resetContentScriptForTest() {
+  userMenuRoot?.unmount();
+  userMenuRoot = null;
+  userMenuRootElement = null;
+  userMenuObserver?.disconnect();
+  userMenuObserver = null;
+  pageThemeObserver?.disconnect();
+  pageThemeObserver = null;
+  if (userMenuEnhanceTimer != null) window.clearTimeout(userMenuEnhanceTimer);
+  if (launcherPlacementTimer != null) window.clearTimeout(launcherPlacementTimer);
+  if (friendMarkerTimer != null) window.clearTimeout(friendMarkerTimer);
+  if (friendActionsTimer != null) window.clearTimeout(friendActionsTimer);
+  if (themeSyncTimer != null) window.clearTimeout(themeSyncTimer);
+  if (heartbeatTimer != null) window.clearInterval(heartbeatTimer);
+  userMenuEnhanceTimer = null;
+  launcherPlacementTimer = null;
+  friendMarkerTimer = null;
+  friendActionsTimer = null;
+  themeSyncTimer = null;
+  heartbeatTimer = null;
+  suppressFriendMarkerMutations = false;
+  suppressFriendActionMutations = false;
+  latestState = null;
+  lastPageTheme = null;
+  if (routePopstateListener) {
+    window.removeEventListener("popstate", routePopstateListener);
+    routePopstateListener = null;
+  }
+  if (originalPushState) {
+    window.history.pushState = originalPushState;
+    originalPushState = null;
+  }
+  if (originalReplaceState) {
+    window.history.replaceState = originalReplaceState;
+    originalReplaceState = null;
+  }
 }
 
 // Mirrored from src/api/profileParser.ts intentionally for the same self-contained MV3 content-script build boundary.

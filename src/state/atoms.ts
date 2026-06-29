@@ -3,6 +3,7 @@ import type { Setter } from "jotai";
 import type {
   ActivityRefreshScope,
   AppState,
+  CloudConfigStatusResult,
   ConfigExportFile,
   FollowedUserInput,
   FriendUser,
@@ -30,6 +31,7 @@ export const statusMessageAtom = atom<string | null>(null);
 export const siteDataProgressAtom = atom<SiteDataTaskProgress | null>(null);
 export const pageScriptStatusAtom = atom<PageScriptStatusSnapshot>(defaultPageScriptStatus());
 export const updateCheckAtom = atom<UpdateCheckState>(defaultUpdateCheckState(installedVersion()));
+export const cloudConfigViewAtom = atom<CloudConfigStatusResult | null>(null);
 export const clearStatusMessageAtom = atom(null, (_get, set) => {
   set(statusMessageAtom, null);
 });
@@ -136,6 +138,13 @@ export const checkForUpdatesAtom = atom(null, async (get, set, force?: boolean) 
       checkedAt: new Date().toISOString(),
       error: response.error || "检查更新失败。"
     });
+  }
+});
+
+export const loadCloudConfigViewAtom = atom(null, async (_get, set) => {
+  const response = await sendCommand<CloudConfigStatusResult>({ type: "getCloudConfigStatus" });
+  if (response.ok) {
+    set(cloudConfigViewAtom, response.data);
   }
 });
 
@@ -338,8 +347,8 @@ export const openSidePanelAtom = atom(null, async (_get, set) => {
   }
 });
 
-export const openOptionsPageAtom = atom(null, async (_get, set) => {
-  const response = await sendCommand<{ message: string }>({ type: "openOptionsPage" });
+export const openOptionsPageAtom = atom(null, async (_get, set, hash?: string) => {
+  const response = await sendCommand<{ message: string }>({ type: "openOptionsPage", hash });
   if (response.ok) {
     set(statusMessageAtom, null);
   } else {

@@ -67,11 +67,32 @@ describe("OptionsApp update diagnostics", () => {
     const { container } = await renderOptionsApp();
 
     await act(async () => {
-      getButton(container, "重新识别账号").click();
+      getButton(container, "重新探测").click();
     });
 
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "identifyCurrentAccount" });
   });
+
+  it("shows a loading state while probing the local account", async () => {
+    const identify = createPendingIdentifyResponse();
+    const chromeMock = setupChrome({ identifyResponse: identify.promise });
+    const { container } = await renderOptionsApp();
+
+    await act(async () => {
+      getButton(container, "重新探测").click();
+    });
+
+    expect(getButton(container, "探测中").disabled).toBe(true);
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "identifyCurrentAccount" });
+
+    await act(async () => {
+      identify.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getButton(container, "重新探测").disabled).toBe(false);
+  });
+
 
   it("clears cache without confirmation from the options page", async () => {
     const chromeMock = setupChrome();
@@ -181,6 +202,36 @@ describe("OptionsApp update diagnostics", () => {
     expect(container.textContent).not.toContain("secret-token");
   });
 
+  it("refreshes cloud binding state when OAuth completion updates cloud auth storage", async () => {
+    const chromeMock = setupChrome({ cloudState: { binding: { bound: false }, status: { state: "unchecked" }, message: "尚未绑定 linuxdo-cloud-save。" } });
+    const { container } = await renderOptionsApp();
+
+    expect(container.textContent).toContain("尚未绑定 linuxdo-cloud-save。");
+
+    chromeMock.setCloudState(boundCloudState("云端配置：1 位佬朋友。"));
+    await act(async () => {
+      chromeMock.emitStorageChange({
+        linuxdoFriendsCloudAuth: {
+          oldValue: undefined,
+          newValue: {
+            app: "linuxdo-friends",
+            linuxDoId: "42",
+            tokenType: "Bearer",
+            tokenKind: "jwt",
+            token: "secret-token",
+            boundAt: "2026-06-29T00:00:00.000Z"
+          }
+        }
+      });
+      await Promise.resolve();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "getCloudConfigStatus" });
+    expect(container.textContent).toContain("已绑定 linuxdo-cloud-save");
+    expect(container.textContent).toContain("绑定账号 ID：42");
+    expect(container.textContent).not.toContain("secret-token");
+  });
+
   it("restores cloud config only after confirmation", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const chromeMock = setupChrome({ cloudState: boundCloudState() });
@@ -214,29 +265,91 @@ describe("OptionsApp update diagnostics", () => {
     expect(container.textContent).toContain("已断开云存档绑定。");
   });
 
-  it("shows the feed background refresh placeholder without enabling durable auto refresh", async () => {
+  it("keeps options page focused on active settings without developer placeholders", async () => {
     const { container } = await renderOptionsApp();
 
-    expect(container.textContent).toContain("佬友圈后台刷新");
-    expect(container.textContent).toContain("webhook");
-    expect(container.textContent).toContain("规则匹配");
-    expect(container.textContent).toContain("本版本只保留入口");
-    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
+    expect(container.textContent).toContain("本地账号探测");
+    expect(container.textContent).toContain("偏好设置");
+    expect(container.textContent).toContain("动态跳转");
+    expect(container.textContent).toContain("后台刷新");
+    expect(container.textContent).toContain("正在施工");
+    expect(container.querySelector(".settings-construction-card")).toBeTruthy();
+    expect(container.textContent).not.toContain("边界");
+    expect(container.textContent).not.toContain("webhook");
+    expect(container.textContent).not.toContain("规则匹配");
+    expect(container.textContent).not.toContain("本版本只保留入口");
   });
 
-  it("updates the activity navigation setting from the options page", async () => {
+  it("groups config migration and cloud backup in one panel with a divider", async () => {
+    const { container } = await renderOptionsApp();
+    const migrationHeading = headingByText(container, "配置迁移");
+    const cloudHeading = headingByText(container, "云端备份");
+    const sharedPanel = migrationHeading.closest("section");
+
+    expect(sharedPanel).toBeTruthy();
+    expect(sharedPanel).toBe(cloudHeading.closest("section"));
+    expect(sharedPanel?.querySelector(".settings-section-divider")).toBeTruthy();
+    expect(container.textContent).toContain("数据维护");
+  });
+
+  it("shows a cloud icon before the cloud backup title", async () => {
+    const { container } = await renderOptionsApp();
+    const cloudHeading = headingByText(container, "云端备份");
+
+    expect(cloudHeading.classList.contains("settings-title-with-icon")).toBe(true);
+    expect(cloudHeading.querySelector("svg")).toBeTruthy();
+  });
+
+  it("scrolls the cloud backup section into view when opened with a hash", async () => {
+    window.history.pushState(null, "", "#cloud-backup");
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { value: scrollIntoView, configurable: true });
+    const requestAnimationFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 1;
+    });
+
+    try {
+      await renderOptionsApp();
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    } finally {
+      requestAnimationFrame.mockRestore();
+      window.history.pushState(null, "", "/");
+    }
+  });
+
+  it("shows LDC sponsor links at the bottom of the options page", async () => {
+    const { container } = await renderOptionsApp();
+    const sponsorLinks = Array.from(container.querySelectorAll<HTMLAnchorElement>(".sponsor-action"));
+
+    expect(container.textContent).toContain("赞助本项目");
+    expect(container.textContent).not.toContain("赞助本项目 LDC");
+    expect(sponsorLinks.map((link) => link.textContent?.trim())).toEqual(["20 LDC", "200 LDC"]);
+    expect(sponsorLinks.map((link) => link.href)).toEqual([
+      "https://credit.linux.do/paying/online?token=276b84998e7864428f277f6d7260f7e65e8c531cda5413cb061ff4a91cc3caa4",
+      "https://credit.linux.do/paying/online?token=276b84998e7864428f277f6d7260f7e65e8c531cda5413cb061ff4a91cc3caa4"
+    ]);
+    expect(sponsorLinks.every((link) => link.target === "_blank")).toBe(true);
+  });
+
+  it("defaults activity navigation to in-page links and switches to new tabs", async () => {
     const chromeMock = setupChrome();
     const { container } = await renderOptionsApp();
-    const toggle = inputByLabelText(container, "在当前 linux.do 页面内打开动态");
+
+    expect(getButton(container, "页内跳转").getAttribute("aria-pressed")).toBe("true");
+    expect(getButton(container, "新标签页").getAttribute("aria-pressed")).toBe("false");
 
     await act(async () => {
-      toggle.click();
+      getButton(container, "新标签页").click();
     });
 
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({
       type: "updateSettings",
-      settings: { openActivityLinksInPage: true }
+      settings: { openActivityLinksInPage: false }
     });
+    expect(getButton(container, "页内跳转").getAttribute("aria-pressed")).toBe("false");
+    expect(getButton(container, "新标签页").getAttribute("aria-pressed")).toBe("true");
   });
 });
 
@@ -262,7 +375,8 @@ function setupChrome({
     checkedAt: "2026-06-28T00:00:00.000Z",
     source: "github_release" as const
   },
-  cloudState = { binding: { bound: false as const }, status: { state: "unchecked" as const }, message: "尚未绑定 linuxdo-cloud-save。" }
+  cloudState = { binding: { bound: false as const }, status: { state: "unchecked" as const }, message: "尚未绑定 linuxdo-cloud-save。" },
+  identifyResponse
 }: {
   updateCheck?: {
     installedVersion: string;
@@ -274,24 +388,31 @@ function setupChrome({
     source?: "github_release";
   };
   cloudState?: Record<string, unknown>;
+  identifyResponse?: Promise<unknown>;
 } = {}) {
+  let currentState = defaultAppState;
+  let currentCloudState = cloudState;
   const storageListeners: Array<(changes: Record<string, chrome.storage.StorageChange>, areaName: string) => void> = [];
   const sendMessage = vi.fn(async (message) => {
     if (message.type === "getState") return { ok: true, data: defaultAppState };
     if (message.type === "getUpdateCheck") return { ok: true, data: updateCheck };
     if (message.type === "checkForUpdates") return { ok: true, data: updateCheck };
     if (message.type === "identifyCurrentAccount") {
+      if (identifyResponse) return identifyResponse;
       return {
         ok: true,
         data: {
-          ...defaultAppState,
+          ...currentState,
           currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" }
         }
       };
     }
-    if (message.type === "clearCache") return { ok: true, data: defaultAppState };
-    if (message.type === "resetExtension") return { ok: true, data: defaultAppState };
-    if (message.type === "updateSettings") return { ok: true, data: defaultAppState };
+    if (message.type === "clearCache") return { ok: true, data: currentState };
+    if (message.type === "resetExtension") return { ok: true, data: currentState };
+    if (message.type === "updateSettings") {
+      currentState = { ...currentState, settings: { ...currentState.settings, ...message.settings } };
+      return { ok: true, data: currentState };
+    }
     if (message.type === "exportConfig") {
       return {
         ok: true,
@@ -332,7 +453,7 @@ function setupChrome({
         }
       };
     }
-    if (message.type === "getCloudConfigStatus") return { ok: true, data: cloudState };
+    if (message.type === "getCloudConfigStatus") return { ok: true, data: currentCloudState };
     if (message.type === "bindCloudSave") return { ok: true, data: boundCloudState("已绑定 linuxdo-cloud-save。") };
     if (message.type === "backupCloudConfig") {
       return {
@@ -377,6 +498,10 @@ function setupChrome({
       onChanged: {
         addListener: vi.fn((callback) => {
           storageListeners.push(callback);
+        }),
+        removeListener: vi.fn((callback) => {
+          const index = storageListeners.indexOf(callback);
+          if (index >= 0) storageListeners.splice(index, 1);
         })
       }
     },
@@ -387,17 +512,34 @@ function setupChrome({
   });
   return {
     sendMessage,
+    setCloudState(nextCloudState: Record<string, unknown>) {
+      currentCloudState = nextCloudState;
+    },
     emitStorageChange(changes: Record<string, chrome.storage.StorageChange>, areaName = "local") {
       for (const listener of storageListeners) listener(changes, areaName);
     }
   };
 }
 
-function inputByLabelText(container: HTMLElement, text: string): HTMLInputElement {
-  const label = Array.from(container.querySelectorAll("label")).find((candidate) => candidate.textContent?.includes(text));
-  const input = label?.querySelector<HTMLInputElement>("input");
-  if (!input) throw new Error(`input not found: ${text}`);
-  return input;
+function headingByText(container: HTMLElement, text: string): HTMLHeadingElement {
+  const heading = Array.from(container.querySelectorAll<HTMLHeadingElement>("h2, h3")).find((candidate) => candidate.textContent === text);
+  if (!heading) throw new Error(`heading not found: ${text}`);
+  return heading;
+}
+
+function createPendingIdentifyResponse() {
+  let resolvePromise: () => void = () => undefined;
+  const promise = new Promise((resolve) => {
+    resolvePromise = () =>
+      resolve({
+        ok: true,
+        data: {
+          ...defaultAppState,
+          currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" }
+        }
+      });
+  });
+  return { promise, resolve: resolvePromise };
 }
 
 function boundCloudState(message = "云端配置：1 位佬朋友。") {

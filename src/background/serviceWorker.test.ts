@@ -45,6 +45,7 @@ describe("message contracts", () => {
     expect(isBackgroundCommand({ type: "repairLinuxDoPageScript", tabId: 123 })).toBe(true);
     expect(isBackgroundCommand({ type: "openSidePanel" })).toBe(true);
     expect(isBackgroundCommand({ type: "openOptionsPage" })).toBe(true);
+    expect(isBackgroundCommand({ type: "openOptionsPage", hash: "#cloud-backup" })).toBe(true);
     expect(isBackgroundCommand({ type: "openLinuxDoHome" })).toBe(true);
     expect(isBackgroundCommand({ type: "openActivityLink", url: "https://linux.do/t/topic/1/2" })).toBe(true);
     expect(isBackgroundCommand({ type: "openActivityLink", url: "/t/topic/1/2" })).toBe(true);
@@ -63,6 +64,7 @@ describe("message contracts", () => {
     expect(isBackgroundCommand({ type: "lookupFriendProfile" })).toBe(false);
     expect(isBackgroundCommand({ type: "addFriendFromKnownUser", user: { name: "No username" } })).toBe(false);
     expect(isBackgroundCommand({ type: "addFriendByProfile" })).toBe(false);
+    expect(isBackgroundCommand({ type: "openOptionsPage", hash: "cloud-backup" })).toBe(false);
     expect(isBackgroundCommand({ type: "refreshFriendProfiles", usernames: ["ok", ""] })).toBe(false);
     expect(isBackgroundCommand({ type: "cacheAvatars", usernames: ["ok", ""] })).toBe(false);
     expect(isBackgroundCommand({ type: "repairLinuxDoPageScript", tabId: 0 })).toBe(false);
@@ -257,6 +259,19 @@ describe("message contracts", () => {
 
     expect(response).toMatchObject({ ok: true, data: { message: "已打开配置页。" } });
     expect(runtime.openOptionsPage).toHaveBeenCalled();
+  });
+
+  it("opens the extension options page at a specific section hash", async () => {
+    const { send, runtime, tabs } = await setupWorker();
+
+    const response = await send({ type: "openOptionsPage", hash: "#cloud-backup" });
+
+    expect(response).toMatchObject({ ok: true, data: { message: "已打开配置页。" } });
+    expect(runtime.openOptionsPage).not.toHaveBeenCalled();
+    expect(tabs.create).toHaveBeenCalledWith({
+      url: "chrome-extension://linuxdo-friends/src/options/index.html#cloud-backup",
+      active: true
+    });
   });
 
   it("routes activity links through the active linux.do page script", async () => {
@@ -455,7 +470,7 @@ describe("message contracts", () => {
   });
 
   it("reads cloud config status without mutating stored state", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => configResponse({ friends: { neo: minimalFriend("neo") } })));
+    vi.stubGlobal("fetch", vi.fn(async () => configSlotResponse({ friends: { neo: minimalFriend("neo") } })));
     const state = addFriendFromProfile(defaultAppState, { username: "local", refreshedAt: "2026-06-28T00:00:00.000Z" });
     const { send, localStorage } = await setupWorker({ initialState: state, initialCloudAuth: cloudAuthFixture() });
 
@@ -557,7 +572,7 @@ describe("message contracts", () => {
   });
 
   it("restores cloud config through existing import semantics and preserves cloud binding", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => configResponse({ friends: { neo: minimalFriend("neo") }, settings: { refreshIntervalMinutes: 90 } })));
+    vi.stubGlobal("fetch", vi.fn(async () => configSlotResponse({ friends: { neo: minimalFriend("neo") }, settings: { refreshIntervalMinutes: 90 } })));
     const state = {
       ...addFriendFromProfile(defaultAppState, { username: "old", refreshedAt: "2026-06-28T00:00:00.000Z" }),
       currentAccount: { username: "lafish", verifiedAt: "2026-06-28T00:00:00.000Z", source: "latest_header" as const }
@@ -597,6 +612,20 @@ describe("message contracts", () => {
     const response = await send({ type: "restoreCloudConfig" });
 
     expect(response).toMatchObject({ ok: false, error: "配置文件版本不支持。" });
+    expect(localStorage.dump()).toMatchObject({ linuxdoFriendsState: { friends: { old: { username: "old" } } } });
+  });
+
+  it("reports a missing cloud config slot without treating the envelope as an unsupported version", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ found: false, app: "linuxdo-friends", slot: "config", data: null, version: 0, updatedAt: null }), { status: 200 }))
+    );
+    const state = addFriendFromProfile(defaultAppState, { username: "old", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const { send, localStorage } = await setupWorker({ initialState: state, initialCloudAuth: cloudAuthFixture() });
+
+    const response = await send({ type: "restoreCloudConfig" });
+
+    expect(response).toMatchObject({ ok: false, error: "云端还没有配置备份。" });
     expect(localStorage.dump()).toMatchObject({ linuxdoFriendsState: { friends: { old: { username: "old" } } } });
   });
 
@@ -1854,6 +1883,27 @@ function configResponse(overrides: Partial<Record<string, unknown>> = {}): Respo
       friends: {},
       settings: { refreshIntervalMinutes: 60 },
       ...overrides
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } }
+  );
+}
+
+function configSlotResponse(overrides: Partial<Record<string, unknown>> = {}): Response {
+  return new Response(
+    JSON.stringify({
+      found: true,
+      app: "linuxdo-friends",
+      slot: "config",
+      data: {
+        schemaVersion: 1,
+        source: "linuxdo-friends",
+        exportedAt: "2026-06-29T00:00:00.000Z",
+        friends: {},
+        settings: { refreshIntervalMinutes: 60 },
+        ...overrides
+      },
+      version: 1,
+      updatedAt: "2026-06-29T00:01:00.000Z"
     }),
     { status: 200, headers: { "Content-Type": "application/json" } }
   );

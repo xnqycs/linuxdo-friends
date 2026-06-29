@@ -122,7 +122,8 @@ function normalizeStoredSettings(value: Partial<RefreshSettings> | Record<string
   return {
     ...defaultAppState.settings,
     refreshIntervalMinutes,
-    openActivityLinksInPage: value.openActivityLinksInPage === true,
+    openActivityLinksInPage:
+      typeof value.openActivityLinksInPage === "boolean" ? value.openActivityLinksInPage : defaultAppState.settings.openActivityLinksInPage,
     allowAutoRefresh: false,
     allowInactiveTabFallback: false
   };
@@ -149,7 +150,8 @@ function normalizeImportedSettings(value: Partial<RefreshSettings> | Record<stri
   return {
     ...defaultAppState.settings,
     refreshIntervalMinutes: value.refreshIntervalMinutes,
-    openActivityLinksInPage: value.openActivityLinksInPage === true,
+    openActivityLinksInPage:
+      typeof value.openActivityLinksInPage === "boolean" ? value.openActivityLinksInPage : defaultAppState.settings.openActivityLinksInPage,
     allowAutoRefresh: false,
     allowInactiveTabFallback: false
   };

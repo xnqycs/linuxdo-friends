@@ -363,7 +363,7 @@ export type BackgroundCommand =
   | { type: "clearCloudBinding" }
   | { type: "repairLinuxDoPageScript"; tabId?: number }
   | { type: "openSidePanel" }
-  | { type: "openOptionsPage" }
+  | { type: "openOptionsPage"; hash?: string }
   | { type: "openLinuxDoHome" }
   | { type: "openActivityLink"; url: string }
   | { type: "updateSettings"; settings: Partial<RefreshSettings> }

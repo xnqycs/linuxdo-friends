@@ -28,19 +28,19 @@ describe("storage migration", () => {
       activityWatermarks: {},
       activityFeedWaterlineAt: undefined,
       avatarCache: {},
-      settings: { openActivityLinksInPage: false }
+      settings: { openActivityLinksInPage: true }
     });
   });
 
-  it("preserves the activity in-page navigation setting", async () => {
+  it("preserves the activity navigation setting", async () => {
     const storage = createMockStorage({
       linuxdoFriendsState: {
-        settings: { refreshIntervalMinutes: 90, openActivityLinksInPage: true }
+        settings: { refreshIntervalMinutes: 90, openActivityLinksInPage: false }
       }
     });
 
     await expect(loadState(storage)).resolves.toMatchObject({
-      settings: { refreshIntervalMinutes: 90, openActivityLinksInPage: true }
+      settings: { refreshIntervalMinutes: 90, openActivityLinksInPage: false }
     });
   });
 

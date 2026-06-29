@@ -3,6 +3,7 @@ import { useAtom, useSetAtom } from "jotai";
 import {
   Check,
   ChevronDown,
+  Cloud,
   ExternalLink,
   List,
   LoaderCircle,
@@ -39,7 +40,9 @@ import {
   cacheAvatarsAtom,
   checkForUpdatesAtom,
   clearStatusMessageAtom,
+  cloudConfigViewAtom,
   identifyCurrentAccountAtom,
+  loadCloudConfigViewAtom,
   loadPageScriptStatusAtom,
   loadingAtom,
   loadSiteDataProgressAtom,
@@ -106,6 +109,7 @@ type AppSurface = "side-panel" | "in-page";
 type FilterOption<T extends string> = {
   value: T;
   label: string;
+  meta?: number | string;
   icon?: ReactNode;
   content?: ReactNode;
   searchText?: string;
@@ -176,11 +180,13 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const [siteDataProgress] = useAtom(siteDataProgressAtom);
   const [pageScriptStatus] = useAtom(pageScriptStatusAtom);
   const [updateCheck] = useAtom(updateCheckAtom);
+  const [cloudConfigView] = useAtom(cloudConfigViewAtom);
   const [autoRefreshSession] = useAtom(autoRefreshSessionAtom);
   const [uiScene] = useAtom(uiSceneAtom);
   const checkForUpdates = useSetAtom(checkForUpdatesAtom);
   const claimAutoRefreshController = useSetAtom(claimAutoRefreshControllerAtom);
   const loadAutoRefreshSession = useSetAtom(loadAutoRefreshSessionAtom);
+  const loadCloudConfigView = useSetAtom(loadCloudConfigViewAtom);
   const loadState = useSetAtom(loadStateAtom);
   const loadPageScriptStatus = useSetAtom(loadPageScriptStatusAtom);
   const loadSiteDataProgress = useSetAtom(loadSiteDataProgressAtom);
@@ -216,6 +222,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const [appStateLoaded, setAppStateLoaded] = useState(false);
   const [relativeNow, setRelativeNow] = useState(() => Date.now());
   const surfaceIdRef = useRef(`${surface}:${Date.now()}:${Math.random().toString(36).slice(2)}`);
+  const feedTopRef = useRef<HTMLElement>(null);
   const { tab, feedKindFilter: kindFilter, feedUserFilter: userFilter, addFriendModalOpen: modalOpen } = uiScene;
 
   useEffect(() => {
@@ -224,6 +231,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
     void loadPageScriptStatus();
     void loadSiteDataProgress();
     void loadUpdateCheck();
+    void loadCloudConfigView();
     void loadAutoRefreshSession();
     void checkForUpdates();
     const cleanupAppState = observeAppState();
@@ -243,6 +251,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   }, [
     checkForUpdates,
     loadAutoRefreshSession,
+    loadCloudConfigView,
     loadPageScriptStatus,
     loadSiteDataProgress,
     loadState,
@@ -326,9 +335,26 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
     void refreshFriendActivity({ kind: kindFilter, usernames: [username] });
   }
 
+  function scrollFeedToTop() {
+    if (feedTopRef.current) {
+      scrollTargetBelowSticky(feedTopRef.current);
+    }
+  }
+
+  function scheduleFeedScrollToTop() {
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => scrollFeedToTop());
+      return;
+    }
+    window.setTimeout(scrollFeedToTop, 0);
+  }
+
   function changeTab(nextTab: typeof uiScene.tab) {
     void updateUiScene({ tab: nextTab });
     clearStatus();
+    if (nextTab === "feed") {
+      scheduleFeedScrollToTop();
+    }
   }
 
   function handleActivityLinkClick(event: React.MouseEvent<HTMLAnchorElement>, href: string) {
@@ -362,7 +388,10 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
                 </div>
               )}
               {state.currentAccount ? (
-                <span className="badge">@{state.currentAccount.username}</span>
+                <span className="badge account-badge">
+                  <span>@{state.currentAccount.username}</span>
+                  <CloudSyncButton bound={cloudConfigView?.binding.bound === true} onOpen={() => void openOptionsPage("#cloud-backup")} />
+                </span>
               ) : (
                 <button className="badge badge-button" type="button" onClick={() => void identifyCurrentAccount(false)} disabled={loading}>
                   识别账号
@@ -418,6 +447,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
           friendsCount={friends.length}
           feedEntries={feedEntries}
           feedItemsCount={feedItems.length}
+          feedTopRef={feedTopRef}
           kindFilter={kindFilter}
           now={relativeNow}
           onRefresh={() => void refreshFriendActivity(activityRefreshScope)}
@@ -509,7 +539,7 @@ function FriendListTab({
           warning="自动刷新会按间隔请求所有佬相好状态；遇到验证、限流或正在刷新会跳过。"
         />
         <button className="manage-button" onClick={onOpenModal} disabled={loading} type="button">
-          我的佬
+          管理
         </button>
       </div>
       {friends.length === 0 ? (
@@ -529,9 +559,12 @@ function FriendListTab({
               <button
                 className="friend-arrow-button"
                 type="button"
+                disabled={friend.activityKinds.length === 0}
                 onClick={() => onJumpToFeed(friend.username)}
-                aria-label={`查看 @${friend.username} 的朋友圈动态`}
-                title="筛选朋友圈"
+                aria-label={
+                  friend.activityKinds.length === 0 ? `@${friend.username} 未选择动态范围` : `查看 @${friend.username} 的朋友圈动态`
+                }
+                title={friend.activityKinds.length === 0 ? "未选择动态范围" : "筛选朋友圈"}
               >
                 ›
               </button>
@@ -540,12 +573,14 @@ function FriendListTab({
         </div>
       )}
       {friends.length > 0 ? <p className="friend-count-footer">共 {friends.length} 位佬朋友</p> : null}
+      <div className="tab-bottom-spacer" aria-hidden="true" />
     </section>
   );
 }
 
 function FeedTab({
   activityFreshness,
+  feedTopRef,
   friendsCount,
   feedEntries,
   feedItemsCount,
@@ -568,6 +603,7 @@ function FeedTab({
   userOptions
 }: {
   activityFreshness: { label: string; refreshedAt?: string };
+  feedTopRef: React.RefObject<HTMLElement | null>;
   friendsCount: number;
   feedEntries: ReturnType<typeof deriveFeedRenderEntries>;
   feedItemsCount: number;
@@ -590,13 +626,12 @@ function FeedTab({
   userOptions: UserIdentityView[];
 }) {
   const activityProgress = progress?.taskType === "activity" ? progress : null;
-  const feedTopRef = useRef<HTMLElement>(null);
   const [backgroundMenuOpen, setBackgroundMenuOpen] = useState(false);
   const backgroundMenuRef = useRef<HTMLDivElement>(null);
   const selectedIdentity = userFilter === "all" ? undefined : identityForUsername(state, userFilter);
   const userFilterOptions = useMemo<Array<FilterOption<"all" | Username>>>(
     () => [
-      { value: "all", label: "全部佬朋友", searchText: "全部佬朋友" },
+      { value: "all", label: "全部", meta: userOptions.length, searchText: "全部 全部佬朋友" },
       ...userOptions.map((identity) => ({
         value: identity.username,
         label: identity.primary,
@@ -610,7 +645,7 @@ function FeedTab({
     () =>
       activityKindOptions.map((option) => ({
         ...option,
-        label: `${option.label} x ${requestCounts[option.value]}`
+        meta: requestCounts[option.value]
       })),
     [requestCounts]
   );
@@ -664,7 +699,7 @@ function FeedTab({
           {backgroundMenuOpen ? (
             <div className="refresh-menu refresh-menu-feed">
               <p className="refresh-menu-title">后台刷新</p>
-              <p className="refresh-menu-warning">佬友圈后台刷新需要在设置页配置，后续会关联 webhook 和规则匹配。</p>
+              <p className="refresh-menu-warning">可在设置页查看插件偏好。</p>
               <button
                 className="refresh-menu-action"
                 type="button"
@@ -688,6 +723,7 @@ function FeedTab({
           open={uiScene.activityKindPopover.open}
           options={activityOptions}
           query={uiScene.activityKindPopover.query}
+          variant="kind"
           value={kindFilter}
         />
         <FilterPopover
@@ -699,6 +735,7 @@ function FeedTab({
           options={userFilterOptions}
           query={uiScene.feedUserPopover.query}
           selectedContent={selectedIdentity ? <UserIdentityRow identity={selectedIdentity} compact /> : undefined}
+          variant="user"
           value={userFilter}
         />
       </div>
@@ -718,6 +755,7 @@ function FeedTab({
           )}
         </div>
       )}
+      <div className="tab-bottom-spacer" aria-hidden="true" />
     </section>
   );
 }
@@ -794,21 +832,28 @@ function SplitRefreshButton({
       </button>
       {open ? (
         <div className="refresh-menu">
-          <label className="refresh-menu-check">
-            <input type="checkbox" checked={autoRefresh.enabled} onChange={(event) => onAutoRefreshEnabledChange(event.target.checked)} />
-            <span>自动刷新</span>
-          </label>
+          <button
+            className="refresh-menu-option"
+            type="button"
+            onClick={() => onAutoRefreshEnabledChange(!autoRefresh.enabled)}
+            aria-pressed={autoRefresh.enabled}
+          >
+            <span>启用自动刷新</span>
+            {autoRefresh.enabled ? <Check size={16} aria-hidden="true" /> : null}
+          </button>
           <div className="refresh-menu-group" role="radiogroup" aria-label="自动刷新间隔">
             {([1, 10, 30] as const).map((interval) => (
-              <label className="refresh-menu-radio" key={interval}>
-                <input
-                  type="radio"
-                  name="friend-status-auto-refresh-interval"
-                  checked={autoRefresh.intervalMinutes === interval}
-                  onChange={() => onAutoRefreshIntervalChange(interval)}
-                />
+              <button
+                className="refresh-menu-option"
+                key={interval}
+                type="button"
+                role="radio"
+                aria-checked={autoRefresh.intervalMinutes === interval}
+                onClick={() => onAutoRefreshIntervalChange(interval)}
+              >
                 <span>{interval} 分钟</span>
-              </label>
+                {autoRefresh.intervalMinutes === interval ? <Check size={16} aria-hidden="true" /> : null}
+              </button>
             ))}
           </div>
           <p className="refresh-menu-warning">{warning}</p>
@@ -969,7 +1014,9 @@ function RefreshButtonContent({
       ? ""
       : freshness.refreshedAt
         ? `${formatRelativeTime(freshness.refreshedAt, renderNow)}已刷新`
-        : freshness.label;
+        : idleLabel === "刷新动态"
+          ? "未曾刷新"
+          : freshness.label;
   const progressText = visibleProgress ? (visibleProgress.currentLabel ?? idleLabel) : idleLabel;
   const scheduleMeta = visibleSchedule ? deriveAutoRefreshCountdownText(visibleSchedule, renderNow) : undefined;
   const metaText = visibleProgress ? "" : scheduleMeta?.label ?? idleMeta;
@@ -1113,6 +1160,7 @@ function FilterPopover<T extends string>({
   options,
   query,
   selectedContent,
+  variant,
   value
 }: {
   label: string;
@@ -1123,6 +1171,7 @@ function FilterPopover<T extends string>({
   options: Array<FilterOption<T>>;
   query: string;
   selectedContent?: ReactNode;
+  variant: "kind" | "user";
   value: T;
 }) {
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -1151,7 +1200,7 @@ function FilterPopover<T extends string>({
   }, [onOpenChange, open]);
 
   return (
-    <div className="filter-popover" ref={popoverRef}>
+    <div className={`filter-popover filter-popover-${variant}`} ref={popoverRef}>
       <span>{label}</span>
       <button
         className="filter-popover-trigger"
@@ -1509,6 +1558,14 @@ function ActivityScopeSelect({
       </button>
       {open ? (
         <div className="scope-select-menu">
+          <div className="scope-select-actions">
+            <button type="button" onClick={() => onChange(ALL_ACTIVITY_KINDS)}>
+              全选
+            </button>
+            <button type="button" onClick={() => onChange([])}>
+              全不选
+            </button>
+          </div>
           {ALL_ACTIVITY_KINDS.map((kind) => {
             const selected = selectedKinds.includes(kind);
             return (
@@ -1558,6 +1615,22 @@ function SidePanelLauncherButton({ status, onOpen }: { status: PageScriptStatusS
   return (
     <button className={`header-icon-chip side-panel-chip page-script-${status.status}`} type="button" onClick={onOpen} title="打开浏览器侧栏" aria-label="打开浏览器侧栏">
       <PanelRightOpen size={14} aria-hidden="true" />
+    </button>
+  );
+}
+
+function CloudSyncButton({ bound, onOpen }: { bound: boolean; onOpen: () => void }) {
+  const label = bound ? "云端配置已绑定" : "云端配置未绑定";
+  return (
+    <button
+      className={`cloud-sync-chip${bound ? " is-bound" : " is-unbound"}`}
+      type="button"
+      onClick={onOpen}
+      title={`${label}，打开云端备份设置`}
+      aria-label={`${label}，打开云端备份设置`}
+    >
+      <Cloud size={12} aria-hidden="true" />
+      {!bound ? <span className="cloud-sync-cross" aria-hidden="true" /> : null}
     </button>
   );
 }
@@ -1623,7 +1696,8 @@ function optionContent<T extends string>(option: FilterOption<T>) {
   return option.content ?? (
     <span className="filter-option-content">
       {option.tone ? <span className={`filter-option-icon kind-${option.tone}`}>{option.icon}</span> : option.icon}
-      {option.label}
+      <span className="filter-option-label">{option.label}</span>
+      {option.meta !== undefined ? <span className="filter-option-count">{option.meta}</span> : null}
     </span>
   );
 }

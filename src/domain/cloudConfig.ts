@@ -61,14 +61,18 @@ export function parseCloudAuthExchangePayload(value: unknown): CloudAuthExchange
 
 export function parseCloudConfigPayload(value: unknown): ConfigExportFile {
   if (!isRecord(value)) throw new CloudConfigError("云端配置不是有效的 JSON 对象。");
+  const config = unwrapCloudConfigPayload(value);
   try {
-    return parseConfigImportJson(JSON.stringify(value));
+    return parseConfigImportJson(JSON.stringify(config));
   } catch (error) {
     throw new CloudConfigError(error instanceof Error ? error.message : "云端配置格式不正确。");
   }
 }
 
 export function summarizeCloudConfigPayload(value: unknown, checkedAt: string = nowIso()): CloudConfigStatus {
+  if (isMissingCloudConfigPayload(value)) {
+    return cloudConfigStatusFromError("missing", "云端还没有配置备份。", checkedAt);
+  }
   const file = parseCloudConfigPayload(value);
   return {
     state: "remote_config",
@@ -95,6 +99,28 @@ export function sanitizeCloudErrorMessage(message: string): string {
   sanitized = sanitized.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer <redacted>");
   sanitized = sanitized.replace(/https:\/\/[^\s]+/g, "[redacted-url]");
   return sanitized;
+}
+
+function unwrapCloudConfigPayload(value: Record<string, unknown>): unknown {
+  if (isCloudConfigSlotPayload(value)) {
+    if (value.found === false) throw new CloudConfigError("云端还没有配置备份。");
+    if (!isRecord(value.data)) throw new CloudConfigError("云端配置格式不正确。");
+    return value.data;
+  }
+  return value;
+}
+
+function isMissingCloudConfigPayload(value: unknown): boolean {
+  return isRecord(value) && isCloudConfigSlotPayload(value) && value.found === false;
+}
+
+function isCloudConfigSlotPayload(value: Record<string, unknown>): boolean {
+  return (
+    "data" in value &&
+    "version" in value &&
+    "updatedAt" in value &&
+    ("found" in value || "app" in value || "slot" in value)
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
