@@ -38,18 +38,25 @@ const userMenuDrawerClass = "linuxdo-friends-user-menu-drawer";
 const userMenuHiddenAttr = "data-linuxdo-friends-menu-hidden";
 const userMenuPreviousDisplayAttr = "data-linuxdo-friends-previous-display";
 const heartbeatIntervalMs = 15_000;
+const themeAttributeFilter = ["class", "style", "data-theme", "data-color-scheme", "data-color-mode", "data-scheme"];
+const schemeLinkSelector = "link.light-scheme, link.dark-scheme";
+type PageTheme = "light" | "dark";
 
 let userMenuRoot: Root | null = null;
+let userMenuRootElement: HTMLElement | null = null;
 let userMenuObserver: MutationObserver | null = null;
+let pageThemeObserver: MutationObserver | null = null;
 let userMenuEnhanceTimer: number | null = null;
 let launcherPlacementTimer: number | null = null;
 let friendMarkerTimer: number | null = null;
 let friendActionsTimer: number | null = null;
+let themeSyncTimer: number | null = null;
 let suppressFriendMarkerMutations = false;
 let suppressFriendActionMutations = false;
 let heartbeatTimer: number | null = null;
 let lastHeartbeatStatus: "pending" | "connected" | "disconnected" = "pending";
 let latestState: AppState | null = null;
+let lastPageTheme: PageTheme | null = null;
 
 void init();
 subscribeToStorageChanges();
@@ -61,6 +68,7 @@ startRouteTracking();
 async function init() {
   const state = await getState();
   ensurePageStyle();
+  syncPageTheme();
   ensureLauncher();
   if (!state) return;
   latestState = state;
@@ -131,6 +139,33 @@ function ensurePageStyle() {
       --linuxdo-friends-accent: #5eead4;
       --linuxdo-friends-accent-soft: rgba(94, 234, 212, 0.28);
       --linuxdo-friends-accent-glow: rgba(94, 234, 212, 0.52);
+      --linuxdo-friends-profile-action-text: #071312;
+      --linuxdo-friends-profile-action-hover-text: #04100f;
+      --linuxdo-friends-profile-action-active-bg: #1d2322;
+      --linuxdo-friends-profile-action-active-mix: #1f2726;
+      --linuxdo-friends-panel-bg: #101414;
+    }
+
+    :root[data-linuxdo-friends-theme="light"] {
+      --linuxdo-friends-accent: #0d9488;
+      --linuxdo-friends-accent-soft: rgba(13, 148, 136, 0.20);
+      --linuxdo-friends-accent-glow: rgba(13, 148, 136, 0.42);
+      --linuxdo-friends-profile-action-text: #04100f;
+      --linuxdo-friends-profile-action-hover-text: #031514;
+      --linuxdo-friends-profile-action-active-bg: #ecfffb;
+      --linuxdo-friends-profile-action-active-mix: #f7fffd;
+      --linuxdo-friends-panel-bg: #f6f8f7;
+    }
+
+    :root[data-linuxdo-friends-theme="dark"] {
+      --linuxdo-friends-accent: #5eead4;
+      --linuxdo-friends-accent-soft: rgba(94, 234, 212, 0.28);
+      --linuxdo-friends-accent-glow: rgba(94, 234, 212, 0.52);
+      --linuxdo-friends-profile-action-text: #071312;
+      --linuxdo-friends-profile-action-hover-text: #04100f;
+      --linuxdo-friends-profile-action-active-bg: #1d2322;
+      --linuxdo-friends-profile-action-active-mix: #1f2726;
+      --linuxdo-friends-panel-bg: #101414;
     }
 
     .${friendNameMarkClass} {
@@ -203,7 +238,7 @@ function ensurePageStyle() {
       align-items: center !important;
       justify-content: center !important;
       gap: 0.45em !important;
-      color: #071312 !important;
+      color: var(--linuxdo-friends-profile-action-text) !important;
       border: 1px solid color-mix(in srgb, var(--linuxdo-friends-accent) 72%, transparent) !important;
       background:
         linear-gradient(
@@ -218,7 +253,7 @@ function ensurePageStyle() {
 
     .${profileActionButtonClass}:hover,
     .${profileActionButtonClass}:focus-visible {
-      color: #04100f !important;
+      color: var(--linuxdo-friends-profile-action-hover-text) !important;
       border-color: color-mix(in srgb, var(--linuxdo-friends-accent) 88%, transparent) !important;
       background:
         linear-gradient(
@@ -236,8 +271,8 @@ function ensurePageStyle() {
       background:
         linear-gradient(
           180deg,
-          color-mix(in srgb, #1f2726 88%, var(--linuxdo-friends-accent) 12%),
-          #1d2322
+          color-mix(in srgb, var(--linuxdo-friends-profile-action-active-mix) 88%, var(--linuxdo-friends-accent) 12%),
+          var(--linuxdo-friends-profile-action-active-bg)
         ) !important;
       border-color: color-mix(in srgb, var(--linuxdo-friends-accent) 48%, transparent) !important;
       box-shadow:
@@ -263,7 +298,7 @@ function ensurePageStyle() {
       height: 100%;
       min-height: 0;
       overflow: hidden;
-      background: #101414;
+      background: var(--linuxdo-friends-panel-bg);
     }
 
     .user-menu.${userMenuActiveClass} .panel-body,
@@ -290,17 +325,75 @@ function ensurePageStyle() {
 
 function startUserMenuIntegration() {
   ensurePageStyle();
+  syncPageTheme();
   scheduleUserMenuEnhancement();
   scheduleLauncherPlacement();
+  startPageThemeObserver();
   if (userMenuObserver) return;
-  userMenuObserver = new MutationObserver(() => {
+  userMenuObserver = new MutationObserver((mutations) => {
+    if (mutationsContainPageThemeTarget(mutations)) {
+      observePageThemeTargets();
+      scheduleThemeSync();
+    }
     scheduleUserMenuEnhancement();
     scheduleLauncherPlacement();
     if (!suppressFriendMarkerMutations) scheduleFriendMarkers();
     if (!suppressFriendActionMutations) scheduleFriendActions();
   });
-  userMenuObserver.observe(document.body, { childList: true, subtree: true });
+  userMenuObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
   window.addEventListener("load", () => scheduleLauncherPlacement(), { once: true });
+}
+
+function startPageThemeObserver() {
+  if (pageThemeObserver) return;
+  pageThemeObserver = new MutationObserver((mutations) => {
+    if (mutationsContainPageThemeTarget(mutations)) observePageThemeTargets();
+    scheduleThemeSync();
+  });
+  observePageThemeTargets();
+}
+
+function observePageThemeTargets() {
+  const currentDocument = globalThis.document;
+  if (!currentDocument) return;
+  if (!pageThemeObserver) return;
+  if (currentDocument.head) {
+    pageThemeObserver.observe(currentDocument.head, { childList: true });
+  }
+  const targets = [
+    currentDocument.documentElement,
+    currentDocument.body,
+    currentDocument.querySelector<HTMLElement>("#discourse-root"),
+    currentDocument.querySelector<HTMLElement>(".d-header"),
+    ...Array.from(currentDocument.querySelectorAll<HTMLElement>(schemeLinkSelector))
+  ].filter((element): element is HTMLElement => Boolean(element));
+  for (const target of targets) {
+    pageThemeObserver.observe(target, {
+      attributes: true,
+      attributeFilter: target.matches(schemeLinkSelector) ? ["media", "class", "href"] : themeAttributeFilter
+    });
+  }
+}
+
+function mutationsContainPageThemeTarget(mutations: MutationRecord[]): boolean {
+  for (const mutation of mutations) {
+    for (const node of mutation.addedNodes) {
+      if (nodeContainsPageThemeTarget(node)) return true;
+    }
+  }
+  return false;
+}
+
+function nodeContainsPageThemeTarget(node: Node): boolean {
+  if (typeof HTMLElement === "undefined") return false;
+  if (!(node instanceof HTMLElement)) return false;
+  return (
+    node.matches(`#discourse-root, .d-header, ${schemeLinkSelector}`) ||
+    Boolean(node.querySelector(`#discourse-root, .d-header, ${schemeLinkSelector}`))
+  );
 }
 
 function startRouteTracking() {
@@ -337,6 +430,15 @@ function scheduleFriendActions() {
   friendActionsTimer = window.setTimeout(() => {
     friendActionsTimer = null;
     if (latestState) enhanceFriendActions(latestState);
+  }, 80);
+}
+
+function scheduleThemeSync() {
+  if (typeof window === "undefined") return;
+  if (themeSyncTimer != null) return;
+  themeSyncTimer = window.setTimeout(() => {
+    themeSyncTimer = null;
+    syncPageTheme();
   }, 80);
 }
 
@@ -470,7 +572,9 @@ function mountUserMenuPanel() {
   style.textContent = `${appCss}\n${userMenuPanelCss()}`;
   const rootNode = document.createElement("div");
   rootNode.className = "linuxdo-friends-menu-root";
+  rootNode.dataset.linuxdoFriendsTheme = currentPageTheme();
   shadow.append(style, rootNode);
+  userMenuRootElement = rootNode;
   userMenuRoot = createRoot(rootNode);
   userMenuRoot.render(React.createElement(FriendsApp, { surface: "in-page" }));
 }
@@ -487,7 +591,112 @@ function closeUserMenuPanel(menu: HTMLElement) {
 function unmountUserMenuPanel() {
   userMenuRoot?.unmount();
   userMenuRoot = null;
+  userMenuRootElement = null;
   document.getElementById(userMenuPanelId)?.remove();
+}
+
+export function syncPageTheme() {
+  if (typeof document === "undefined") return;
+  const theme = detectPageTheme();
+  if (theme === lastPageTheme) return;
+  lastPageTheme = theme;
+  document.documentElement.dataset.linuxdoFriendsTheme = theme;
+  document.querySelectorAll<HTMLElement>(".linuxdo-friends-menu-root").forEach((root) => {
+    root.dataset.linuxdoFriendsTheme = theme;
+  });
+  if (userMenuRootElement) {
+    userMenuRootElement.dataset.linuxdoFriendsTheme = theme;
+  }
+}
+
+function currentPageTheme(): PageTheme {
+  return lastPageTheme ?? detectPageTheme();
+}
+
+export function detectPageTheme(): PageTheme {
+  if (typeof document === "undefined") return "light";
+  return explicitPageTheme() ?? renderedPageTheme();
+}
+
+function explicitPageTheme(): PageTheme | null {
+  const candidates = [
+    document.documentElement,
+    document.body,
+    document.querySelector<HTMLElement>("#discourse-root"),
+    document.querySelector<HTMLElement>(".d-header")
+  ].filter((element): element is HTMLElement => Boolean(element));
+  for (const element of candidates) {
+    const values = [
+      element.dataset.theme,
+      element.dataset.colorScheme,
+      element.dataset.colorMode,
+      element.dataset.scheme,
+      element.getAttribute("data-theme"),
+      element.getAttribute("data-color-scheme"),
+      element.getAttribute("data-color-mode"),
+      element.getAttribute("data-scheme"),
+      element.getAttribute("class")
+    ];
+    const theme = themeFromTokens(values);
+    if (theme) return theme;
+  }
+  const rootStyle = getComputedStyle(document.documentElement);
+  return themeFromTokens([
+    rootStyle.getPropertyValue("--scheme-type"),
+    rootStyle.getPropertyValue("--color-scheme"),
+    rootStyle.getPropertyValue("color-scheme")
+  ]);
+}
+
+function themeFromTokens(values: Array<string | null | undefined>): PageTheme | null {
+  for (const rawValue of values) {
+    const value = rawValue?.toLocaleLowerCase();
+    if (!value) continue;
+    if (/(^|[\s_-])(dark|night|黑暗|深色)([\s_-]|$)/.test(value)) return "dark";
+    if (/(^|[\s_-])(light|day|白天|浅色|亮色)([\s_-]|$)/.test(value)) return "light";
+  }
+  return null;
+}
+
+function renderedPageTheme(): PageTheme {
+  const sample = renderedBackgroundColor(document.body) ?? renderedBackgroundColor(document.documentElement);
+  if (!sample) return "light";
+  return relativeLuminance(sample) < 0.5 ? "dark" : "light";
+}
+
+function renderedBackgroundColor(start: Element | null): RGBColor | null {
+  let current: Element | null = start;
+  while (current) {
+    const color = parseCssColor(getComputedStyle(current).backgroundColor);
+    if (color && color.a > 0.1) return color;
+    current = current.parentElement;
+  }
+  return null;
+}
+
+interface RGBColor {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+function parseCssColor(value: string): RGBColor | null {
+  const match = value.match(/rgba?\(([^)]+)\)/i);
+  if (!match) return null;
+  const parts = match[1].split(/[,\s/]+/).filter(Boolean);
+  const [r, g, b] = parts.slice(0, 3).map((part) => Number.parseFloat(part));
+  if (![r, g, b].every(Number.isFinite)) return null;
+  const a = parts[3] === undefined ? 1 : Number.parseFloat(parts[3]);
+  return { r, g, b, a: Number.isFinite(a) ? a : 1 };
+}
+
+function relativeLuminance(color: RGBColor) {
+  const [r, g, b] = [color.r, color.g, color.b].map((channel) => {
+    const value = channel / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
 function hideNativeUserMenuPanels(contents: HTMLElement) {
@@ -571,7 +780,8 @@ function profileFriendActionTarget(): FriendActionTarget | null {
     container,
     anchor: findProfileFollowButton() ?? undefined,
     name: profilePageDisplayName(username),
-    avatarUrl: profilePageAvatarUrl()
+    avatarUrl: profilePageAvatarUrl(),
+    wrapWithListItem: container.matches("ul, ol")
   };
 }
 
@@ -583,7 +793,16 @@ function currentProfileUsername(): Username | null {
 }
 
 function findProfileActionContainer(): HTMLElement | null {
-  return findProfileFollowButton()?.parentElement ?? findProfileActionButtons().at(0)?.parentElement ?? null;
+  const followButton = findProfileFollowButton();
+  if (followButton) return profileButtonListContainer(followButton) ?? followButton.parentElement;
+  const firstButton = findProfileActionButtons().at(0);
+  return firstButton ? profileButtonListContainer(firstButton) ?? firstButton.parentElement : null;
+}
+
+function profileButtonListContainer(button: HTMLElement): HTMLElement | null {
+  const listItem = button.closest("li");
+  const list = listItem?.parentElement;
+  return list?.matches("ul, ol") ? list : null;
 }
 
 function findProfileFollowButton(): HTMLElement | null {
@@ -1160,7 +1379,7 @@ function discourseFriendIconSvg() {
 function userMenuPanelCss() {
   return `
     :host {
-      color-scheme: dark;
+      color-scheme: inherit;
       all: initial;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -1171,7 +1390,7 @@ function userMenuPanelCss() {
       min-height: 0;
       overflow-x: hidden;
       overflow-y: auto;
-      background: #101414;
+      background: var(--app-bg);
     }
     .linuxdo-friends-menu-root .shell {
       width: 100%;
@@ -1199,7 +1418,7 @@ function userMenuPanelCss() {
       align-items: stretch;
       justify-content: stretch;
       padding: 8px;
-      background: rgb(15 23 42 / 0.26);
+      background: var(--overlay);
     }
     .linuxdo-friends-menu-root .modal {
       width: 100%;
@@ -1268,6 +1487,7 @@ function runContentScriptCommand(message: ContentScriptCommand): Promise<Content
   if (message.type === "linuxdoFriends.extractFollowing") return extractFollowingFromPage();
   if (message.type === "linuxdoFriends.extractProfile") return extractProfileFromPage(message.username);
   if (message.type === "linuxdoFriends.extractAvatar") return extractAvatarFromPage(message.username, message.avatarUrl);
+  if (message.step) return extractActivityStepFromPage(message.username, message.step);
   return extractActivityFromPage(message.username, message.kind ?? "all");
 }
 
@@ -1327,6 +1547,19 @@ async function extractActivityFromPage(
     items.push(...normalizeStepItems(normalizedUsername, step.kind, response.json));
   }
   return { ok: true, activity: summaryFromItems(normalizedUsername, items) };
+}
+
+async function extractActivityStepFromPage(
+  username: Username,
+  step: { kind: ActivityRefreshRequestKind; path: string }
+): Promise<ContentScriptActivityResponse> {
+  const normalizedUsername = normalizeUsername(username);
+  if (!normalizedUsername) {
+    return { ok: false, reason: "unavailable", error: "缺少要刷新的好友用户名。" };
+  }
+  const response = await fetchJson(step.path);
+  if (!response.ok) return { ok: false, reason: response.reason, error: response.error };
+  return { ok: true, activity: summaryFromItems(normalizedUsername, normalizeStepItems(normalizedUsername, step.kind, response.json)) };
 }
 
 async function extractAvatarFromPage(
@@ -1401,7 +1634,7 @@ async function fetchJson(path: string): Promise<
 
 function isContentScriptCommand(value: unknown): value is ContentScriptCommand {
   if (typeof value !== "object" || value == null) return false;
-  const message = value as { type?: unknown; username?: unknown; kind?: unknown; avatarUrl?: unknown };
+  const message = value as { type?: unknown; username?: unknown; kind?: unknown; avatarUrl?: unknown; step?: unknown };
   if (message.type === "linuxdoFriends.extractCurrentAccount") return true;
   if (message.type === "linuxdoFriends.extractFollowing") return true;
   if (message.type === "linuxdoFriends.extractAvatar") {
@@ -1411,8 +1644,29 @@ function isContentScriptCommand(value: unknown): value is ContentScriptCommand {
     (message.type === "linuxdoFriends.extractActivity" || message.type === "linuxdoFriends.extractProfile") &&
     typeof message.username === "string" &&
     message.username.trim().length > 0 &&
-    (message.type !== "linuxdoFriends.extractActivity" || message.kind === undefined || isActivityKind(message.kind))
+    (message.type !== "linuxdoFriends.extractActivity" ||
+      ((message.kind === undefined || isActivityKind(message.kind)) && (message.step === undefined || isActivityRequestStepMessage(message.step))))
   );
+}
+
+function isActivityRequestStepMessage(value: unknown): value is { kind: ActivityRefreshRequestKind; path: string } {
+  if (typeof value !== "object" || value == null) return false;
+  const step = value as { kind?: unknown; path?: unknown };
+  return isActivityRequestKind(step.kind) && typeof step.path === "string" && isLinuxDoRelativeJsonPath(step.path);
+}
+
+function isActivityRequestKind(value: unknown): value is ActivityRefreshRequestKind {
+  return value === "topic" || value === "reply" || value === "boost" || value === "reaction" || value === "user_actions";
+}
+
+function isLinuxDoRelativeJsonPath(path: string): boolean {
+  if (!path.startsWith("/") || path.startsWith("//")) return false;
+  try {
+    const url = new URL(path, "https://linux.do");
+    return url.origin === "https://linux.do" && url.pathname.endsWith(".json");
+  } catch {
+    return false;
+  }
 }
 
 function isLinuxDoAvatarUrl(value: string): boolean {

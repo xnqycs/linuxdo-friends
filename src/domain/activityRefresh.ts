@@ -13,7 +13,7 @@ import type {
   Username
 } from "../shared/types";
 import { sortActivityItems } from "./activity";
-import { normalizeUsername } from "./friends";
+import { ALL_ACTIVITY_KINDS, normalizeActivityKinds, normalizeUsername } from "./friends";
 
 export interface ActivityRequestStep {
   username: Username;
@@ -50,56 +50,40 @@ export function normalizeRefreshTargets(state: AppState, usernames?: Username[])
 
 export function planActivityRefreshTargets(state: AppState, scope?: ActivityRefreshScope): ActivityRefreshTarget[] {
   const normalizedScope = normalizeActivityRefreshScope(scope);
-  return normalizeRefreshTargets(state, normalizedScope.usernames).map((username) => ({
-    username,
-    steps: activityRequestStepsForUser(username, normalizedScope.kind),
-    refreshedKinds: activityKindsForScope(normalizedScope.kind)
-  }));
+  return normalizeRefreshTargets(state, normalizedScope.usernames)
+    .map((username) => {
+      const refreshedKinds = effectiveActivityKindsForFriend(state, username, normalizedScope.kind);
+      return {
+        username,
+        steps: activityRequestStepsForUserKinds(username, refreshedKinds),
+        refreshedKinds
+      };
+    })
+    .filter((target) => target.refreshedKinds.length > 0);
+}
+
+export function effectiveActivityKindsForFriend(
+  state: AppState,
+  usernameInput: Username,
+  kind: ActivityKindFilter = "all"
+): ActivityRefreshKind[] {
+  const username = normalizeUsername(usernameInput);
+  const friend = state.friends[username];
+  if (!friend) return [];
+  const requestedKinds = activityKindsForScope(kind);
+  const allowedKinds = normalizeActivityKinds(friend.activityKinds, ALL_ACTIVITY_KINDS);
+  return requestedKinds.filter((requestedKind) => allowedKinds.includes(requestedKind));
 }
 
 export function activityRequestStepsForUser(usernameInput: Username, kind: ActivityKindFilter): ActivityRequestStep[] {
+  return activityRequestStepsForUserKinds(usernameInput, activityKindsForScope(kind));
+}
+
+export function activityRequestStepsForUserKinds(usernameInput: Username, kinds: ActivityRefreshKind[]): ActivityRequestStep[] {
   const username = normalizeUsername(usernameInput);
-  if (kind === "topic") {
-    return [userActionsStep(username, "topic", "4", "话题")];
-  }
-  if (kind === "reply") {
-    return [userActionsStep(username, "reply", "5", "回复")];
-  }
-  if (kind === "boost") {
-    return [
-      {
-        username,
-        kind: "boost",
-        path: `/discourse-boosts/users/${encodeURIComponent(username)}/boosts-given.json`,
-        label: `Boost @${username}`
-      }
-    ];
-  }
-  if (kind === "reaction") {
-    return [
-      {
-        username,
-        kind: "reaction",
-        path: `/discourse-reactions/posts/reactions.json?username=${encodeURIComponent(username)}`,
-        label: `回应 @${username}`
-      }
-    ];
-  }
-  return [
-    userActionsStep(username, "user_actions", "4,5", "话题/回复"),
-    {
-      username,
-      kind: "boost",
-      path: `/discourse-boosts/users/${encodeURIComponent(username)}/boosts-given.json`,
-      label: `Boost @${username}`
-    },
-    {
-      username,
-      kind: "reaction",
-      path: `/discourse-reactions/posts/reactions.json?username=${encodeURIComponent(username)}`,
-      label: `回应 @${username}`
-    }
-  ];
+  return activityKindsForScope("all")
+    .filter((kind) => kinds.includes(kind))
+    .map((kind) => activityRequestStepForKind(username, kind));
 }
 
 export function activityKindsForScope(kind: ActivityKindFilter): ActivityRefreshKind[] {
@@ -184,9 +168,9 @@ export function latestRefreshForScope(
 ): ActivityRefreshLedgerEntry | undefined {
   const normalized = normalizeActivityRefreshScope(scope);
   const usernames = normalizeRefreshTargets(state, normalized.usernames);
-  const kinds = activityKindsForScope(normalized.kind);
   let latest: ActivityRefreshLedgerEntry | undefined;
   for (const username of usernames) {
+    const kinds = effectiveActivityKindsForFriend(state, username, normalized.kind);
     for (const kind of kinds) {
       const entry = ledger[activityRefreshLedgerKey(username, kind)];
       if (!entry) continue;
@@ -229,6 +213,25 @@ function userActionsStep(username: Username, kind: ActivityRefreshRequestKind, f
     kind,
     path: `/user_actions.json?offset=0&username=${encodeURIComponent(username)}&filter=${filter}`,
     label: `${label} @${username}`
+  };
+}
+
+function activityRequestStepForKind(username: Username, kind: ActivityRefreshKind): ActivityRequestStep {
+  if (kind === "topic") return userActionsStep(username, "topic", "4", "话题");
+  if (kind === "reply") return userActionsStep(username, "reply", "5", "回复");
+  if (kind === "boost") {
+    return {
+      username,
+      kind: "boost",
+      path: `/discourse-boosts/users/${encodeURIComponent(username)}/boosts-given.json`,
+      label: `Boost @${username}`
+    };
+  }
+  return {
+    username,
+    kind: "reaction",
+    path: `/discourse-reactions/posts/reactions.json?username=${encodeURIComponent(username)}`,
+    label: `回应 @${username}`
   };
 }
 

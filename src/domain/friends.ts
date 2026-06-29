@@ -1,8 +1,34 @@
 import { nowIso } from "../shared/time";
-import type { AppState, FollowedUser, FriendProfileSummary, FriendUser, Username } from "../shared/types";
+import type { ActivityRefreshKind, AppState, FollowedUser, FriendProfileSummary, FriendUser, Username } from "../shared/types";
+
+export const ALL_ACTIVITY_KINDS: ActivityRefreshKind[] = ["topic", "reply", "boost", "reaction"];
 
 export function normalizeUsername(username: string): Username {
   return username.trim().replace(/^@/, "").toLowerCase();
+}
+
+export function isActivityRefreshKind(value: unknown): value is ActivityRefreshKind {
+  return value === "topic" || value === "reply" || value === "boost" || value === "reaction";
+}
+
+export function normalizeActivityKinds(value: unknown, fallback: ActivityRefreshKind[] = ALL_ACTIVITY_KINDS): ActivityRefreshKind[] {
+  if (value === undefined) return [...fallback];
+  if (!Array.isArray(value)) return [...fallback];
+  const kinds = value.filter(isActivityRefreshKind);
+  return ALL_ACTIVITY_KINDS.filter((kind) => kinds.includes(kind));
+}
+
+export function normalizeFriendUser(value: Partial<FriendUser> & { username: string }, fallback?: FriendUser): FriendUser {
+  const timestamp = nowIso();
+  return {
+    username: normalizeUsername(value.username),
+    note: typeof value.note === "string" ? value.note : fallback?.note ?? "",
+    groups: Array.isArray(value.groups) ? value.groups.filter((item): item is string => typeof item === "string") : fallback?.groups ?? [],
+    pinned: typeof value.pinned === "boolean" ? value.pinned : fallback?.pinned ?? false,
+    activityKinds: normalizeActivityKinds(value.activityKinds, fallback?.activityKinds ?? ALL_ACTIVITY_KINDS),
+    upgradedAt: typeof value.upgradedAt === "string" && value.upgradedAt.trim() ? value.upgradedAt : fallback?.upgradedAt ?? timestamp,
+    updatedAt: typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt : fallback?.updatedAt ?? timestamp
+  };
 }
 
 export function upsertFollowedUser(
@@ -33,10 +59,7 @@ export function addFriendFromProfile(state: AppState, profileInput: FriendProfil
   const existing = state.friends[username];
   const timestamp = nowIso();
   const friend: FriendUser = {
-    username,
-    note: existing?.note ?? "",
-    groups: existing?.groups ?? [],
-    pinned: existing?.pinned ?? false,
+    ...normalizeFriendUser({ username }, existing),
     upgradedAt: existing?.upgradedAt ?? timestamp,
     updatedAt: timestamp
   };
@@ -72,10 +95,7 @@ export function addFriendFromKnownUser(
     friends: {
       ...state.friends,
       [username]: {
-        username,
-        note: existing?.note ?? "",
-        groups: existing?.groups ?? [],
-        pinned: existing?.pinned ?? false,
+        ...normalizeFriendUser({ username }, existing),
         upgradedAt: existing?.upgradedAt ?? timestamp,
         updatedAt: timestamp
       }
@@ -113,21 +133,23 @@ export function upsertFriendProfile(state: AppState, profileInput: FriendProfile
 export function updateFriend(
   state: AppState,
   usernameInput: Username,
-  patch: Partial<Pick<FriendUser, "note" | "groups" | "pinned">>
+  patch: Partial<Pick<FriendUser, "note" | "groups" | "pinned" | "activityKinds">>
 ): AppState {
   const username = normalizeUsername(usernameInput);
   const existing = state.friends[username];
   if (!existing) return state;
+  const next: FriendUser = {
+    ...existing,
+    ...patch,
+    groups: patch.groups ?? existing.groups,
+    activityKinds: patch.activityKinds === undefined ? existing.activityKinds : normalizeActivityKinds(patch.activityKinds, existing.activityKinds),
+    updatedAt: nowIso()
+  };
   return {
     ...state,
     friends: {
       ...state.friends,
-      [username]: {
-        ...existing,
-        ...patch,
-        groups: patch.groups ?? existing.groups,
-        updatedAt: nowIso()
-      }
+      [username]: next
     }
   };
 }
@@ -152,6 +174,7 @@ export function getFriendView(state: AppState) {
       note: friend.note,
       groups: friend.groups,
       pinned: friend.pinned,
+      activityKinds: normalizeActivityKinds(friend.activityKinds),
       profile: state.friendProfiles[friend.username],
       activity: state.activity[friend.username]
     }))

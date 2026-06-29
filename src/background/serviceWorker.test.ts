@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultAppState } from "../domain/defaultState";
-import { addFriendFromProfile, upsertFollowedUser } from "../domain/friends";
+import { addFriendFromProfile, updateFriend, upsertFollowedUser } from "../domain/friends";
 import { isBackgroundCommand } from "../messages/contracts";
 import { PAGE_SCRIPT_STATUS_STORAGE_KEY } from "../storage/pageScriptStatusStorage";
 import { SITE_DATA_PROGRESS_STORAGE_KEY } from "../storage/siteDataProgressStorage";
@@ -24,6 +24,8 @@ describe("message contracts", () => {
       })
     ).toBe(true);
     expect(isBackgroundCommand({ type: "addFriendByProfile", username: "neil" })).toBe(true);
+    expect(isBackgroundCommand({ type: "updateFriend", username: "neil", patch: { activityKinds: [] } })).toBe(true);
+    expect(isBackgroundCommand({ type: "updateFriend", username: "neil", patch: { activityKinds: ["reply", "boost"] } })).toBe(true);
     expect(isBackgroundCommand({ type: "refreshFriendProfiles", usernames: ["neil"] })).toBe(true);
     expect(isBackgroundCommand({ type: "refreshFriendActivity", usernames: ["neil"] })).toBe(true);
     expect(isBackgroundCommand({ type: "refreshFriendActivity", scope: { kind: "boost", usernames: ["neil"] } })).toBe(true);
@@ -57,6 +59,7 @@ describe("message contracts", () => {
     expect(isBackgroundCommand({ type: "repairLinuxDoPageScript", tabId: 0 })).toBe(false);
     expect(isBackgroundCommand({ type: "checkForUpdates", force: "yes" })).toBe(false);
     expect(isBackgroundCommand({ type: "refreshFriendActivity", scope: { kind: "bad", usernames: ["ok"] } })).toBe(false);
+    expect(isBackgroundCommand({ type: "updateFriend", username: "neil", patch: { activityKinds: ["bad"] } })).toBe(false);
     expect(isBackgroundCommand({ type: "seedFollowedUser", user: { name: "No username" } })).toBe(false);
     expect(isBackgroundCommand({ type: "updateSettings", settings: { refreshIntervalMinutes: 1 } })).toBe(false);
     expect(isBackgroundCommand({ type: "importConfig", json: "" })).toBe(false);
@@ -653,6 +656,14 @@ describe("message contracts", () => {
               items: []
             }
           })
+          .mockResolvedValueOnce({
+            ok: true,
+            activity: {
+              username: "misaka7369",
+              refreshedAt: "2026-06-27T00:00:00.000Z",
+              items: []
+            }
+          })
       }
     });
 
@@ -668,17 +679,22 @@ describe("message contracts", () => {
     expect(tabs.sendMessage).toHaveBeenCalledWith(456, {
       type: "linuxdoFriends.extractActivity",
       username: "misaka7369",
-      kind: "user_actions"
+      step: { kind: "topic", path: "/user_actions.json?offset=0&username=misaka7369&filter=4" }
     });
     expect(tabs.sendMessage).toHaveBeenCalledWith(456, {
       type: "linuxdoFriends.extractActivity",
       username: "misaka7369",
-      kind: "boost"
+      step: { kind: "reply", path: "/user_actions.json?offset=0&username=misaka7369&filter=5" }
     });
     expect(tabs.sendMessage).toHaveBeenCalledWith(456, {
       type: "linuxdoFriends.extractActivity",
       username: "misaka7369",
-      kind: "reaction"
+      step: { kind: "boost", path: "/discourse-boosts/users/misaka7369/boosts-given.json" }
+    });
+    expect(tabs.sendMessage).toHaveBeenCalledWith(456, {
+      type: "linuxdoFriends.extractActivity",
+      username: "misaka7369",
+      step: { kind: "reaction", path: "/discourse-reactions/posts/reactions.json?username=misaka7369" }
     });
   });
 
@@ -776,6 +792,34 @@ describe("message contracts", () => {
     expect(progressResponse).toMatchObject({
       ok: true,
       data: { taskType: "activity", status: "success", completed: 1, total: 1, scope: { kind: "boost", usernames: ["misaka7369"] } }
+    });
+  });
+
+  it("completes activity progress with zero total when every selected friend disallows dynamic activity", async () => {
+    const state = updateFriend(
+      addFriendFromProfile(defaultAppState, { username: "misaka7369", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      "misaka7369",
+      { activityKinds: [] }
+    );
+    vi.stubGlobal("fetch", vi.fn());
+    const { send, sessionStorage } = await setupWorker({ initialState: state });
+
+    const response = await send({ type: "refreshFriendActivity", scope: { kind: "all", usernames: ["Misaka7369"] } });
+    const progressResponse = await send({ type: "getSiteDataProgress" });
+
+    expect(response).toMatchObject({
+      ok: true,
+      data: {
+        lastSync: { ok: true, source: "direct_fetch", message: "当前视奸范围没有可刷新的动态。" }
+      }
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(sessionStorage.dump()).toMatchObject({
+      [SITE_DATA_PROGRESS_STORAGE_KEY]: expect.objectContaining({ taskType: "activity", status: "success", completed: 0, total: 0 })
+    });
+    expect(progressResponse).toMatchObject({
+      ok: true,
+      data: { taskType: "activity", status: "success", completed: 0, total: 0 }
     });
   });
 
@@ -1103,11 +1147,11 @@ describe("message contracts", () => {
         settings: { refreshIntervalMinutes: 60, allowAutoRefresh: false, allowInactiveTabFallback: false }
       }
     });
-    const payload = JSON.stringify((response as { ok: true; data: unknown }).data);
-    expect(payload).not.toContain("currentAccount");
-    expect(payload).not.toContain("followedUsers");
-    expect(payload).not.toContain("avatarCache");
-    expect(payload).not.toContain("activity");
+    const exported = (response as { ok: true; data: Record<string, unknown> }).data;
+    expect(exported).not.toHaveProperty("currentAccount");
+    expect(exported).not.toHaveProperty("followedUsers");
+    expect(exported).not.toHaveProperty("avatarCache");
+    expect(exported).not.toHaveProperty("activity");
   });
 
   it("imports config with overwrite semantics and clears non-migratable state", async () => {

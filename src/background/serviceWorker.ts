@@ -780,7 +780,7 @@ async function refreshFriendActivityFromExistingTab(
   for (const target of targets) {
     const items: ActivityItem[] = [];
     for (const step of target.steps) {
-      const response = await sendToAvailableLinuxDoTab((tabId) => sendExtractActivityMessage(tabId, target.username, step.kind));
+      const response = await sendToAvailableLinuxDoTab((tabId) => sendExtractActivityMessage(tabId, target.username, step));
       if (!response) return null;
       if (!response.ok) {
         return {
@@ -1113,13 +1113,13 @@ async function sendExtractProfileMessage(tabId: number, username: Username): Pro
 async function sendExtractActivityMessage(
   tabId: number,
   username: Username,
-  kind: ActivityKindFilter | "user_actions"
+  step: ActivityRequestStep
 ): Promise<ContentScriptActivityResponse> {
   try {
     const response = (await chrome.tabs.sendMessage(tabId, {
       type: "linuxdoFriends.extractActivity",
       username,
-      kind
+      step: { kind: step.kind, path: step.path }
     })) as ContentScriptActivityResponse | undefined;
     return response ?? { ok: false, reason: "unavailable", error: "已打开的 linux.do 页面没有响应动态刷新请求，请刷新页面后重试。" };
   } catch {

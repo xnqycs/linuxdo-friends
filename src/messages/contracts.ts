@@ -74,7 +74,8 @@ function isFriendPatch(value: unknown): boolean {
   return (
     isOptionalString(value.note) &&
     (value.groups === undefined || isStringList(value.groups)) &&
-    (value.pinned === undefined || typeof value.pinned === "boolean")
+    (value.pinned === undefined || typeof value.pinned === "boolean") &&
+    (value.activityKinds === undefined || isActivityRefreshKindList(value.activityKinds))
   );
 }
 
@@ -101,6 +102,10 @@ function isUsernameList(value: unknown): boolean {
 
 function isActivityKindFilter(value: unknown): boolean {
   return value === "all" || value === "topic" || value === "reply" || value === "boost" || value === "reaction";
+}
+
+function isActivityRefreshKindList(value: unknown): boolean {
+  return Array.isArray(value) && value.every((item) => item === "topic" || item === "reply" || item === "boost" || item === "reaction");
 }
 
 function isStringList(value: unknown): boolean {

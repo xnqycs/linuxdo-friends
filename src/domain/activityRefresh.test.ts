@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addFriendFromProfile } from "./friends";
+import { addFriendFromProfile, updateFriend } from "./friends";
 import {
   activityRefreshLedgerKey,
   activityRequestStepsForUser,
@@ -26,7 +26,12 @@ describe("activity refresh planning and merge", () => {
     expect(activityRequestStepsForUser("Neil", "reaction").map((step) => step.path)).toEqual([
       "/discourse-reactions/posts/reactions.json?username=neil"
     ]);
-    expect(activityRequestStepsForUser("Neil", "all").map((step) => step.kind)).toEqual(["user_actions", "boost", "reaction"]);
+    expect(activityRequestStepsForUser("Neil", "all").map((step) => [step.kind, step.path])).toEqual([
+      ["topic", "/user_actions.json?offset=0&username=neil&filter=4"],
+      ["reply", "/user_actions.json?offset=0&username=neil&filter=5"],
+      ["boost", "/discourse-boosts/users/neil/boosts-given.json"],
+      ["reaction", "/discourse-reactions/posts/reactions.json?username=neil"]
+    ]);
   });
 
   it("plans only selected friends and normalizes usernames", () => {
@@ -46,6 +51,37 @@ describe("activity refresh planning and merge", () => {
         ]
       }
     ]);
+  });
+
+  it("intersects global scope with each friend's activity scope", () => {
+    const withNeil = updateFriend(
+      addFriendFromProfile(defaultAppState, { username: "Neil", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      "neil",
+      { activityKinds: ["reply", "boost"] }
+    );
+    const state = updateFriend(
+      addFriendFromProfile(withNeil, { username: "Ada", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      "ada",
+      { activityKinds: ["reaction"] }
+    );
+
+    expect(planActivityRefreshTargets(state, { kind: "all" }).map((target) => [target.username, target.refreshedKinds])).toEqual([
+      ["neil", ["reply", "boost"]],
+      ["ada", ["reaction"]]
+    ]);
+    expect(planActivityRefreshTargets(state, { kind: "reply" }).map((target) => [target.username, target.refreshedKinds])).toEqual([
+      ["neil", ["reply"]]
+    ]);
+  });
+
+  it("omits friends with an empty activity scope from dynamic refresh planning", () => {
+    const state = updateFriend(
+      addFriendFromProfile(defaultAppState, { username: "Neil", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      "neil",
+      { activityKinds: [] }
+    );
+
+    expect(planActivityRefreshTargets(state, { kind: "all", usernames: ["Neil"] })).toEqual([]);
   });
 
   it("merges scoped items without deleting other cached kinds and writes per-kind ledger", () => {
@@ -239,6 +275,35 @@ describe("activity refresh planning and merge", () => {
     expect(latestRefreshForScope(state.activityRefreshLedger, state, { kind: "boost" })?.username).toBe("ada");
     expect(latestRefreshForScope(state.activityRefreshLedger, state, { kind: "boost", usernames: ["Neil"] })?.username).toBe("neil");
     expect(latestActivityRefreshAt(state)).toBe("2026-06-28T00:03:00.000Z");
+  });
+
+  it("ignores disallowed user-kind pairs when deriving latest refresh for scope", () => {
+    const state = {
+      ...updateFriend(addFriendFromProfile(defaultAppState, { username: "Neil", refreshedAt: "2026-06-28T00:00:00.000Z" }), "neil", {
+        activityKinds: ["reply"]
+      }),
+      activityRefreshLedger: {
+        [activityRefreshLedgerKey("neil", "boost")]: {
+          scopeKey: activityRefreshLedgerKey("neil", "boost"),
+          username: "neil",
+          kind: "boost" as const,
+          refreshedAt: "2026-06-28T00:03:00.000Z",
+          source: "direct_fetch" as const,
+          itemCount: 1
+        },
+        [activityRefreshLedgerKey("neil", "reply")]: {
+          scopeKey: activityRefreshLedgerKey("neil", "reply"),
+          username: "neil",
+          kind: "reply" as const,
+          refreshedAt: "2026-06-28T00:01:00.000Z",
+          source: "direct_fetch" as const,
+          itemCount: 1
+        }
+      }
+    };
+
+    expect(latestRefreshForScope(state.activityRefreshLedger, state, { kind: "all", usernames: ["Neil"] })?.kind).toBe("reply");
+    expect(latestRefreshForScope(state.activityRefreshLedger, state, { kind: "boost", usernames: ["Neil"] })).toBeUndefined();
   });
 
   it("stores the previous global activity refresh time as the feed waterline", () => {

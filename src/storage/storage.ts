@@ -1,4 +1,5 @@
 import { defaultAppState } from "../domain/defaultState";
+import { normalizeFriendUser, normalizeUsername } from "../domain/friends";
 import type { AppState, RefreshSettings } from "../shared/types";
 
 export const APP_STATE_STORAGE_KEY = "linuxdoFriendsState";
@@ -37,7 +38,7 @@ export async function updateState(
 function mergeState(stored?: Partial<AppState>): AppState {
   return {
     followedUsers: stored?.followedUsers ?? {},
-    friends: stored?.friends ?? {},
+    friends: mergeFriends(stored?.friends),
     friendProfiles: stored?.friendProfiles ?? {},
     activity: stored?.activity ?? {},
     activityRefreshLedger: stored?.activityRefreshLedger ?? {},
@@ -48,6 +49,17 @@ function mergeState(stored?: Partial<AppState>): AppState {
     currentAccount: stored?.currentAccount,
     lastSync: stored?.lastSync
   };
+}
+
+function mergeFriends(stored?: Partial<AppState["friends"]>): AppState["friends"] {
+  const friends: AppState["friends"] = {};
+  for (const [key, value] of Object.entries(stored ?? {})) {
+    if (!value || typeof value !== "object") continue;
+    const username = normalizeUsername(typeof value.username === "string" ? value.username : key);
+    if (!username) continue;
+    friends[username] = normalizeFriendUser({ ...value, username });
+  }
+  return friends;
 }
 
 function mergeSettings(stored?: Partial<RefreshSettings>): RefreshSettings {

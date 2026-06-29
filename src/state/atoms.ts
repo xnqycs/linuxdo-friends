@@ -5,6 +5,7 @@ import type {
   AppState,
   ConfigExportFile,
   FollowedUserInput,
+  FriendUser,
   FriendProfileSummary,
   PageRepairResult,
   PageScriptStatusSnapshot,
@@ -234,6 +235,12 @@ export const removeFriendAtom = atom(null, async (_get, set, username: string) =
   set(loadingAtom, true);
   const response = await sendCommand<AppState>({ type: "removeFriend", username });
   applyStateResponse(set, response, response.ok ? "已移除佬朋友。" : undefined);
+});
+
+export const updateFriendAtom = atom(null, async (_get, set, username: string, patch: Partial<Pick<FriendUser, "note" | "groups" | "pinned" | "activityKinds">>) => {
+  set(loadingAtom, true);
+  const response = await sendCommand<AppState>({ type: "updateFriend", username, patch });
+  applyStateResponse(set, response, response.ok ? null : undefined);
 });
 
 export const refreshFriendProfilesAtom = atom(null, async (_get, set) => {

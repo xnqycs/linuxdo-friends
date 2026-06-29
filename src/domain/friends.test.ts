@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultAppState } from "./defaultState";
-import { addFriendFromKnownUser, addFriendFromProfile, removeFriend, updateFriend, upsertFriendProfile } from "./friends";
+import { ALL_ACTIVITY_KINDS, addFriendFromKnownUser, addFriendFromProfile, removeFriend, updateFriend, upsertFriendProfile } from "./friends";
 
 describe("friend profile-backed domain operations", () => {
   it("adds a validated profile without requiring followedUsers", () => {
@@ -11,7 +11,7 @@ describe("friend profile-backed domain operations", () => {
       refreshedAt: "2026-06-28T00:00:00.000Z"
     });
 
-    expect(state.friends.neil).toMatchObject({ username: "neil", note: "", groups: [] });
+    expect(state.friends.neil).toMatchObject({ username: "neil", note: "", groups: [], activityKinds: ALL_ACTIVITY_KINDS });
     expect(state.friendProfiles.neil).toMatchObject({ username: "neil", name: "Neo" });
   });
 
@@ -20,7 +20,7 @@ describe("friend profile-backed domain operations", () => {
       username: "Neil",
       refreshedAt: "2026-06-28T00:00:00.000Z"
     });
-    const withMetadata = updateFriend(state, "neil", { note: "old friend", groups: ["core"], pinned: true });
+    const withMetadata = updateFriend(state, "neil", { note: "old friend", groups: ["core"], pinned: true, activityKinds: ["reply"] });
     const next = addFriendFromProfile(withMetadata, {
       username: "NEIL",
       name: "Neo",
@@ -31,6 +31,7 @@ describe("friend profile-backed domain operations", () => {
       note: "old friend",
       groups: ["core"],
       pinned: true,
+      activityKinds: ["reply"],
       upgradedAt: state.friends.neil.upgradedAt
     });
     expect(next.friendProfiles.neil).toMatchObject({ username: "neil", name: "Neo" });
@@ -54,7 +55,7 @@ describe("friend profile-backed domain operations", () => {
       avatarUrl: "https://linux.do/avatar.png"
     });
 
-    expect(state.friends.neil).toMatchObject({ username: "neil" });
+    expect(state.friends.neil).toMatchObject({ username: "neil", activityKinds: ALL_ACTIVITY_KINDS });
     expect(state.friendProfiles.neil).toMatchObject({
       username: "neil",
       name: "Neo",
@@ -75,7 +76,7 @@ describe("friend profile-backed domain operations", () => {
       }
     );
 
-    expect(state.friends.neil).toMatchObject({ username: "neil" });
+    expect(state.friends.neil).toMatchObject({ username: "neil", activityKinds: ALL_ACTIVITY_KINDS });
     expect(state.friendProfiles.neil).toMatchObject({
       username: "neil",
       name: "Neo",
@@ -103,5 +104,14 @@ describe("friend profile-backed domain operations", () => {
     expect(next.friends.neil).toBeUndefined();
     expect(next.friendProfiles.neil).toBeUndefined();
     expect(next.activity.neil).toBeUndefined();
+  });
+
+  it("allows updating activity scope to a subset or empty selection", () => {
+    const state = addFriendFromKnownUser(defaultAppState, { username: "Neil" });
+    const repliesOnly = updateFriend(state, "neil", { activityKinds: ["reply"] });
+    const noDynamicActivity = updateFriend(repliesOnly, "neil", { activityKinds: [] });
+
+    expect(repliesOnly.friends.neil.activityKinds).toEqual(["reply"]);
+    expect(noDynamicActivity.friends.neil.activityKinds).toEqual([]);
   });
 });

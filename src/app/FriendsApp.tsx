@@ -1,6 +1,7 @@
 import React, { type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import {
+  Check,
   ChevronDown,
   ExternalLink,
   List,
@@ -44,7 +45,8 @@ import {
   siteDataProgressAtom,
   statusMessageAtom,
   syncFollowsAtom,
-  updateCheckAtom
+  updateCheckAtom,
+  updateFriendAtom
 } from "../state/atoms";
 import { VersionBadge } from "./VersionStatus";
 import { loadUiSceneAtom, observeUiSceneAtom, uiSceneAtom, updateUiSceneAtom } from "../state/uiSceneAtoms";
@@ -52,6 +54,7 @@ import { formatRelativeTime } from "../shared/time";
 import type {
   ActivityItem,
   ActivityKindFilter,
+  ActivityRefreshKind,
   ActivityRefreshScope,
   BackgroundResponse,
   FollowedUserInput,
@@ -63,6 +66,7 @@ import type {
 } from "../shared/types";
 import {
   type UserIdentityView,
+  deriveActivityRequestCounts,
   deriveActivityFreshness,
   deriveActivityRefreshScope,
   deriveFeedItems,
@@ -78,7 +82,7 @@ import {
   orderFollowedCandidates,
   syntheticFriendCandidate
 } from "../popup/selectors";
-import { normalizeUsername } from "../domain/friends";
+import { ALL_ACTIVITY_KINDS, normalizeUsername } from "../domain/friends";
 import "../styles/app.css";
 
 type AppSurface = "side-panel" | "in-page";
@@ -173,6 +177,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const refreshFriendActivity = useSetAtom(refreshFriendActivityAtom);
   const repairLinuxDoPageScript = useSetAtom(repairLinuxDoPageScriptAtom);
   const syncFollows = useSetAtom(syncFollowsAtom);
+  const updateFriend = useSetAtom(updateFriendAtom);
   const clearStatus = useSetAtom(clearStatusMessageAtom);
   const updateUiScene = useSetAtom(updateUiSceneAtom);
   const [appStateLoaded, setAppStateLoaded] = useState(false);
@@ -228,6 +233,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const feedItems = useMemo(() => deriveFeedItems(state, { kind: kindFilter, username: userFilter }), [kindFilter, state, userFilter]);
   const feedEntries = useMemo(() => deriveFeedRenderEntries(state, { kind: kindFilter, username: userFilter }), [kindFilter, state, userFilter]);
   const activityRefreshScope = useMemo(() => deriveActivityRefreshScope({ kind: kindFilter, username: userFilter }), [kindFilter, userFilter]);
+  const activityRequestCounts = useMemo(() => deriveActivityRequestCounts(state, userFilter), [state, userFilter]);
   const activityFreshness = useMemo(() => deriveActivityFreshness(state, activityRefreshScope), [activityRefreshScope, state]);
   const profileFreshness = useMemo(() => deriveProfileFreshness(friends), [friends]);
   const siteDataTaskRunning = siteDataProgress?.status === "running";
@@ -351,6 +357,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
           onActivityKindPopoverChange={(activityKindPopover) => void updateUiScene({ activityKindPopover })}
           onFeedUserPopoverChange={(feedUserPopover) => void updateUiScene({ feedUserPopover })}
           progress={siteDataProgress}
+          requestCounts={activityRequestCounts}
           refreshDisabled={refreshDisabled}
           scope={activityRefreshScope}
           state={state}
@@ -372,6 +379,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
           onQueryChange={(query) => void updateUiScene({ addFriendQuery: query })}
           onLookup={(target) => lookupFriendProfile(target)}
           onRemove={(target) => void removeFriend(target)}
+          onUpdateScope={(username, activityKinds) => void updateFriend(username, { activityKinds })}
           onOpenLinuxDoHome={() => void openLinuxDoHome()}
           onRepairPageScript={() => void repairLinuxDoPageScript()}
           onSync={() => void syncFollows()}
@@ -468,6 +476,7 @@ function FeedTab({
   onUserFilterChange,
   progress,
   refreshDisabled,
+  requestCounts,
   scope,
   state,
   uiScene,
@@ -487,6 +496,7 @@ function FeedTab({
   onUserFilterChange: (value: "all" | Username) => void;
   progress: SiteDataTaskProgress | null;
   refreshDisabled: boolean;
+  requestCounts: Record<ActivityKindFilter, number>;
   scope: ActivityRefreshScope;
   state: Parameters<typeof identityForActivityItem>[0];
   uiScene: UiSceneState;
@@ -507,6 +517,14 @@ function FeedTab({
       }))
     ],
     [userOptions]
+  );
+  const activityOptions = useMemo(
+    () =>
+      activityKindOptions.map((option) => ({
+        ...option,
+        label: `${option.label} x ${requestCounts[option.value]}`
+      })),
+    [requestCounts]
   );
   function scrollFeedToTop() {
     if (feedTopRef.current) {
@@ -535,7 +553,7 @@ function FeedTab({
           onOpenChange={(open) => onActivityKindPopoverChange({ open })}
           onQueryChange={(query) => onActivityKindPopoverChange({ query })}
           open={uiScene.activityKindPopover.open}
-          options={activityKindOptions}
+          options={activityOptions}
           query={uiScene.activityKindPopover.query}
           value={kindFilter}
         />
@@ -844,6 +862,7 @@ function AddFriendModal({
   onLookup,
   onOpenLinuxDoHome,
   onRemove,
+  onUpdateScope,
   onRepairPageScript,
   onSync,
   status
@@ -859,6 +878,7 @@ function AddFriendModal({
   onLookup: (username: Username) => Promise<BackgroundResponse<FriendProfileSummary>>;
   onOpenLinuxDoHome: () => void;
   onRemove: (username: Username) => void;
+  onUpdateScope: (username: Username, activityKinds: ActivityRefreshKind[]) => void;
   onRepairPageScript: () => void;
   onSync: () => void;
   status: string | null;
@@ -982,6 +1002,8 @@ function AddFriendModal({
                     onAdd={(user) => onAdd(user, lookupProfiles[user.username])}
                     onLookup={handleLookup}
                     onRemove={onRemove}
+                    onUpdateScope={onUpdateScope}
+                    scope={friends.find((item) => item.friend.username === candidate.user.username)?.friend.activityKinds}
                   />
                 </div>
               ))}
@@ -1001,7 +1023,9 @@ function CandidateAction({
   lookupVerified,
   onAdd,
   onLookup,
-  onRemove
+  onRemove,
+  onUpdateScope,
+  scope
 }: {
   candidate: ReturnType<typeof mergeFriendCandidates>[number];
   disabled: boolean;
@@ -1011,12 +1035,21 @@ function CandidateAction({
   onAdd: (user: FollowedUserInput) => void;
   onLookup: (username: Username) => void;
   onRemove: (username: Username) => void;
+  onUpdateScope: (username: Username, activityKinds: ActivityRefreshKind[]) => void;
+  scope?: ActivityRefreshKind[];
 }) {
   if (candidate.isFriend) {
     return (
-      <button className="candidate-action-remove" onClick={() => onRemove(candidate.user.username)} disabled={disabled} type="button">
-        移除
-      </button>
+      <div className="candidate-manage-actions">
+        <ActivityScopeSelect
+          disabled={disabled}
+          value={scope ?? ALL_ACTIVITY_KINDS}
+          onChange={(activityKinds) => onUpdateScope(candidate.user.username, activityKinds)}
+        />
+        <button className="candidate-action-remove" onClick={() => onRemove(candidate.user.username)} disabled={disabled} type="button">
+          移除
+        </button>
+      </div>
     );
   }
 
@@ -1041,6 +1074,78 @@ function CandidateAction({
       视奸 ta
     </button>
   );
+}
+
+function ActivityScopeSelect({
+  disabled,
+  onChange,
+  value
+}: {
+  disabled: boolean;
+  onChange: (activityKinds: ActivityRefreshKind[]) => void;
+  value: ActivityRefreshKind[];
+}) {
+  const [open, setOpen] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const selectedKinds = useMemo(() => ALL_ACTIVITY_KINDS.filter((kind) => value.includes(kind)), [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (popoverRef.current && !eventHappenedInside(event, popoverRef.current)) {
+        setOpen(false);
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  function toggleKind(kind: ActivityRefreshKind) {
+    if (selectedKinds.includes(kind)) {
+      onChange(selectedKinds.filter((item) => item !== kind));
+      return;
+    }
+    onChange(ALL_ACTIVITY_KINDS.filter((item) => item === kind || selectedKinds.includes(item)));
+  }
+
+  return (
+    <div className="scope-select" ref={popoverRef}>
+      <button className="scope-select-trigger" type="button" disabled={disabled} onClick={() => setOpen((current) => !current)} aria-expanded={open}>
+        <span>视奸范围</span>
+        <strong>{scopeSummary(selectedKinds)}</strong>
+        <ChevronDown size={13} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="scope-select-menu">
+          {ALL_ACTIVITY_KINDS.map((kind) => {
+            const selected = selectedKinds.includes(kind);
+            return (
+              <button className={selected ? "selected" : ""} key={kind} type="button" onClick={() => toggleKind(kind)}>
+                <span className={`filter-option-icon kind-${kind}`}>{kindIcon(kind)}</span>
+                <span>{kindText(kind)}</span>
+                {selected ? <Check size={13} aria-hidden="true" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function scopeSummary(kinds: ActivityRefreshKind[]) {
+  if (kinds.length === ALL_ACTIVITY_KINDS.length) return "全部";
+  if (kinds.length === 0) return "不看动态";
+  return kinds.map(kindText).join(" / ");
 }
 
 function omitKey<T>(record: Record<Username, T>, key: Username): Record<Username, T> {

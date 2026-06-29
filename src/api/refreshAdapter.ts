@@ -153,6 +153,17 @@ export function createRefreshAdapter(fetchImpl: typeof fetch = fetch): RefreshAd
     async refreshFriendActivity(state, scope, onProgress) {
       const normalizedScope = normalizeActivityRefreshScope(scope);
       const targets = planActivityRefreshTargets(state, normalizedScope);
+      if (targets.length === 0) {
+        return {
+          state,
+          result: {
+            ok: true,
+            source: "direct_fetch",
+            message: "当前视奸范围没有可刷新的动态。",
+            refreshedAt: nowIso()
+          }
+        };
+      }
       const collectedTargets: CollectedActivityTarget[] = [];
       const feedWaterlineAt = latestActivityRefreshAt(state);
       for (const target of targets) {

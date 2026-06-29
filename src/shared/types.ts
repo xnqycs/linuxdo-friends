@@ -16,6 +16,7 @@ export interface FriendUser {
   note: string;
   groups: string[];
   pinned: boolean;
+  activityKinds: ActivityRefreshKind[];
   upgradedAt: string;
   updatedAt: string;
 }
@@ -260,7 +261,7 @@ export type BackgroundCommand =
   | { type: "addFriendFromKnownUser"; user: FollowedUserInput; profile?: FriendProfileSummary }
   | { type: "addFriendByProfile"; username: Username }
   | { type: "removeFriend"; username: Username }
-  | { type: "updateFriend"; username: Username; patch: Partial<Pick<FriendUser, "note" | "groups" | "pinned">> }
+  | { type: "updateFriend"; username: Username; patch: Partial<Pick<FriendUser, "note" | "groups" | "pinned" | "activityKinds">> }
   | { type: "syncFollowedUsers" }
   | { type: "refreshFriendProfiles"; usernames?: Username[] }
   | { type: "refreshFriendActivity"; usernames?: Username[]; scope?: ActivityRefreshScope }
@@ -288,6 +289,7 @@ export interface VisibleFriend {
   note: string;
   groups: string[];
   pinned: boolean;
+  activityKinds: ActivityRefreshKind[];
   profile?: FriendProfileSummary;
   activity?: FriendActivitySummary;
 }
@@ -296,7 +298,12 @@ export type ContentScriptCommand =
   | { type: "linuxdoFriends.extractCurrentAccount" }
   | { type: "linuxdoFriends.extractFollowing" }
   | { type: "linuxdoFriends.extractProfile"; username: Username }
-  | { type: "linuxdoFriends.extractActivity"; username: Username; kind?: ActivityKindFilter | "user_actions" }
+  | {
+      type: "linuxdoFriends.extractActivity";
+      username: Username;
+      kind?: ActivityKindFilter | "user_actions";
+      step?: { kind: ActivityRefreshRequestKind; path: string };
+    }
   | { type: "linuxdoFriends.extractAvatar"; username: Username; avatarUrl: string };
 
 export type ContentScriptFailureResponse = { ok: false; reason: RefreshFailureReason | "unavailable"; error: string };

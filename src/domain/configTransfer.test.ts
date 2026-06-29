@@ -16,6 +16,7 @@ describe("config transfer", () => {
             note: "NAS",
             groups: ["ops"],
             pinned: true,
+            activityKinds: ["topic", "reaction"],
             upgradedAt: "2026-06-28T00:00:00.000Z",
             updatedAt: "2026-06-28T00:00:00.000Z"
           }
@@ -36,15 +37,16 @@ describe("config transfer", () => {
           note: "NAS",
           groups: ["ops"],
           pinned: true,
+          activityKinds: ["topic", "reaction"],
           upgradedAt: "2026-06-28T00:00:00.000Z",
           updatedAt: "2026-06-28T00:00:00.000Z"
         }
       },
       settings: defaultAppState.settings
     });
-    expect(JSON.stringify(file)).not.toContain("currentAccount");
-    expect(JSON.stringify(file)).not.toContain("followedUsers");
-    expect(JSON.stringify(file)).not.toContain("activity");
+    expect(file).not.toHaveProperty("currentAccount");
+    expect(file).not.toHaveProperty("followedUsers");
+    expect(file).not.toHaveProperty("activity");
   });
 
   it("normalizes valid import files", () => {
@@ -59,6 +61,7 @@ describe("config transfer", () => {
             note: "NAS",
             groups: ["ops", "ops", ""],
             pinned: true,
+            activityKinds: ["reaction", "bad", "reply", "reply"],
             upgradedAt: "2026-06-28T00:00:00.000Z",
             updatedAt: "2026-06-28T00:00:00.000Z"
           }
@@ -67,8 +70,37 @@ describe("config transfer", () => {
       })
     );
 
-    expect(file.friends.neo).toMatchObject({ username: "neo", groups: ["ops"], pinned: true });
+    expect(file.friends.neo).toMatchObject({ username: "neo", groups: ["ops"], pinned: true, activityKinds: ["reply", "reaction"] });
     expect(file.settings).toEqual({ allowAutoRefresh: false, allowInactiveTabFallback: false, refreshIntervalMinutes: 60 });
+  });
+
+  it("defaults legacy imported friends to all activity kinds and preserves explicit empty scope", () => {
+    const file = parseConfigImportJson(
+      JSON.stringify({
+        schemaVersion: 1,
+        source: "linuxdo-friends",
+        exportedAt: "2026-06-28T00:00:00.000Z",
+        friends: {
+          legacy: {
+            username: "legacy",
+            groups: [],
+            upgradedAt: "2026-06-28T00:00:00.000Z",
+            updatedAt: "2026-06-28T00:00:00.000Z"
+          },
+          quiet: {
+            username: "quiet",
+            groups: [],
+            activityKinds: [],
+            upgradedAt: "2026-06-28T00:00:00.000Z",
+            updatedAt: "2026-06-28T00:00:00.000Z"
+          }
+        },
+        settings: { refreshIntervalMinutes: 60 }
+      })
+    );
+
+    expect(file.friends.legacy.activityKinds).toEqual(["topic", "reply", "boost", "reaction"]);
+    expect(file.friends.quiet.activityKinds).toEqual([]);
   });
 
   it("rejects invalid import files", () => {
@@ -110,6 +142,7 @@ describe("config transfer", () => {
             note: "",
             groups: [],
             pinned: false,
+            activityKinds: ["boost"],
             upgradedAt: "2026-06-28T00:00:00.000Z",
             updatedAt: "2026-06-28T00:00:00.000Z"
           }

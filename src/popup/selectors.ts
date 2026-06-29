@@ -1,5 +1,5 @@
 import { sortActivityItems } from "../domain/activity";
-import { latestRefreshForScope, scopeLabel } from "../domain/activityRefresh";
+import { effectiveActivityKindsForFriend, latestRefreshForScope, planActivityRefreshTargets, scopeLabel } from "../domain/activityRefresh";
 import { normalizeUsername } from "../domain/friends";
 import type { ActivityItem, ActivityKindFilter, ActivityRefreshScope, AppState, FollowedUser, FriendProfileSummary, FriendUser, Username } from "../shared/types";
 
@@ -45,6 +45,8 @@ export interface ActivityFreshnessView {
   label: string;
   refreshedAt?: string;
 }
+
+export type ActivityRequestCounts = Record<ActivityKindFilter, number>;
 
 export type FeedRenderEntry =
   | { type: "activity"; item: ActivityItem }
@@ -141,16 +143,22 @@ export function syntheticFriendCandidate(friends: FriendListItem[], candidates: 
 }
 
 export function deriveFeedItems(state: AppState, filters: FeedFilters = { kind: "all", username: "all" }): ActivityItem[] {
-  const items = sortActivityItems(
-    Object.values(state.activity)
-      .filter((summary) => Boolean(state.friends[summary.username]))
-      .flatMap((summary) => summary.items)
-  );
-  return items.filter((item) => {
-    if (filters.kind !== "all" && item.kind !== filters.kind) return false;
-    if (filters.username !== "all" && (item.actorUsername ?? item.username) !== filters.username) return false;
-    return true;
-  });
+  const filteredOwner = filters.username === "all" ? "all" : normalizeUsername(filters.username);
+  const entries = Object.values(state.activity)
+    .filter((summary) => Boolean(state.friends[summary.username]))
+    .flatMap((summary) => {
+      const ownerUsername = normalizeUsername(summary.username);
+      const allowedKinds = effectiveActivityKindsForFriend(state, ownerUsername, "all");
+      return summary.items
+        .filter((item) => item.kind !== "summary" && allowedKinds.includes(item.kind))
+        .map((item) => ({ ownerUsername, item }));
+    })
+    .filter(({ ownerUsername, item }) => {
+      if (filters.kind !== "all" && item.kind !== filters.kind) return false;
+      if (filteredOwner !== "all" && ownerUsername !== filteredOwner) return false;
+      return true;
+    });
+  return sortActivityItems(entries.map(({ item }) => item));
 }
 
 export function deriveFeedRenderEntries(state: AppState, filters: FeedFilters = { kind: "all", username: "all" }): FeedRenderEntry[] {
@@ -183,6 +191,31 @@ export function deriveActivityRefreshScope(filters: FeedFilters): ActivityRefres
   return {
     kind: filters.kind,
     usernames: filters.username === "all" ? undefined : [filters.username]
+  };
+}
+
+export function deriveActivityRequestCounts(state: AppState, username: "all" | Username = "all"): ActivityRequestCounts {
+  return {
+    all: planActivityRefreshTargets(state, { kind: "all", usernames: username === "all" ? undefined : [username] }).reduce(
+      (sum, target) => sum + target.steps.length,
+      0
+    ),
+    topic: planActivityRefreshTargets(state, { kind: "topic", usernames: username === "all" ? undefined : [username] }).reduce(
+      (sum, target) => sum + target.steps.length,
+      0
+    ),
+    reply: planActivityRefreshTargets(state, { kind: "reply", usernames: username === "all" ? undefined : [username] }).reduce(
+      (sum, target) => sum + target.steps.length,
+      0
+    ),
+    boost: planActivityRefreshTargets(state, { kind: "boost", usernames: username === "all" ? undefined : [username] }).reduce(
+      (sum, target) => sum + target.steps.length,
+      0
+    ),
+    reaction: planActivityRefreshTargets(state, { kind: "reaction", usernames: username === "all" ? undefined : [username] }).reduce(
+      (sum, target) => sum + target.steps.length,
+      0
+    )
   };
 }
 

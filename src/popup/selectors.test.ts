@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultAppState } from "../domain/defaultState";
-import { addFriendFromProfile, upsertFollowedUser } from "../domain/friends";
+import { ALL_ACTIVITY_KINDS, addFriendFromProfile, updateFriend, upsertFollowedUser } from "../domain/friends";
 import {
   deriveFeedItems,
   deriveFeedRenderEntries,
@@ -8,6 +8,7 @@ import {
   deriveFollowedCandidates,
   deriveFriendList,
   deriveActivityFreshness,
+  deriveActivityRequestCounts,
   deriveActivityRefreshScope,
   filterFriendCandidates,
   identityForActivityItem,
@@ -144,6 +145,7 @@ describe("popup selectors", () => {
           note: "",
           groups: [],
           pinned: true,
+          activityKinds: ALL_ACTIVITY_KINDS,
           upgradedAt: "2026-06-28T00:20:00.000Z",
           updatedAt: "2026-06-28T00:20:00.000Z"
         }
@@ -246,6 +248,49 @@ describe("popup selectors", () => {
     expect(deriveFeedItems(state, { kind: "all", username: "neil" })).toHaveLength(3);
   });
 
+  it("hides cached feed items disallowed by the watched friend's scope", () => {
+    const state = {
+      ...updateFriend(addFriendFromProfile(defaultAppState, { username: "Neil", refreshedAt: "2026-06-28T00:00:00.000Z" }), "neil", {
+        activityKinds: ["reply"]
+      }),
+      activity: {
+        neil: {
+          username: "neil",
+          refreshedAt: "2026-06-28T00:05:00.000Z",
+          items: [
+            { id: "reply:1", username: "neil", actorUsername: "neil", kind: "reply" as const, title: "reply" },
+            { id: "boost:1", username: "neil", actorUsername: "ada", kind: "boost" as const, title: "boost" }
+          ]
+        }
+      }
+    };
+
+    expect(deriveFeedItems(state).map((item) => item.id)).toEqual(["reply:1"]);
+    expect(state.activity.neil.items.map((item) => item.id)).toEqual(["reply:1", "boost:1"]);
+  });
+
+  it("filters feed users by watched summary owner instead of activity actor", () => {
+    const withNeil = addFriendFromProfile(defaultAppState, { username: "Neil", refreshedAt: "2026-06-28T00:00:00.000Z" });
+    const state = {
+      ...addFriendFromProfile(withNeil, { username: "Ada", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      activity: {
+        neil: {
+          username: "neil",
+          refreshedAt: "2026-06-28T00:05:00.000Z",
+          items: [{ id: "boost:neil", username: "neil", actorUsername: "ada", kind: "boost" as const, title: "neil watched boost" }]
+        },
+        ada: {
+          username: "ada",
+          refreshedAt: "2026-06-28T00:05:00.000Z",
+          items: [{ id: "boost:ada", username: "ada", actorUsername: "neil", kind: "boost" as const, title: "ada watched boost" }]
+        }
+      }
+    };
+
+    expect(deriveFeedItems(state, { kind: "all", username: "neil" }).map((item) => item.id)).toEqual(["boost:neil"]);
+    expect(deriveFeedItems(state, { kind: "all", username: "ada" }).map((item) => item.id)).toEqual(["boost:ada"]);
+  });
+
   it("inserts a feed waterline between items newer and older than the last refresh", () => {
     const withFriend = addFriendFromProfile(defaultAppState, { username: "Neil", refreshedAt: "2026-06-28T00:00:00.000Z" });
     const state = {
@@ -327,6 +372,22 @@ describe("popup selectors", () => {
       label: "@neil 回应 未刷新",
       refreshedAt: undefined
     });
+  });
+
+  it("derives activity request counts from effective per-friend scopes", () => {
+    const withNeil = updateFriend(
+      addFriendFromProfile(defaultAppState, { username: "Neil", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      "neil",
+      { activityKinds: ["reply", "boost"] }
+    );
+    const state = updateFriend(
+      addFriendFromProfile(withNeil, { username: "Ada", refreshedAt: "2026-06-28T00:00:00.000Z" }),
+      "ada",
+      { activityKinds: [] }
+    );
+
+    expect(deriveActivityRequestCounts(state)).toEqual({ all: 2, topic: 0, reply: 1, boost: 1, reaction: 0 });
+    expect(deriveActivityRequestCounts(state, "ada")).toEqual({ all: 0, topic: 0, reply: 0, boost: 0, reaction: 0 });
   });
 
   it("does not show cached activity for users who are no longer friends", () => {

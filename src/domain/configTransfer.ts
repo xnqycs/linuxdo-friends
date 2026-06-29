@@ -1,5 +1,5 @@
 import { defaultAppState } from "./defaultState";
-import { normalizeUsername } from "./friends";
+import { normalizeActivityKinds, normalizeFriendUser, normalizeUsername } from "./friends";
 import { nowIso } from "../shared/time";
 import type { AppState, FriendUser, RefreshSettings } from "../shared/types";
 
@@ -87,10 +87,15 @@ function normalizeFriendsRecord(value: Record<string, unknown>): Record<string, 
     const username = normalizeUsername(typeof item.username === "string" ? item.username : key);
     if (!username) throw new Error("佬朋友配置包含无效用户名。");
     friends[username] = {
-      username,
-      note: typeof item.note === "string" ? item.note : "",
-      groups: normalizeGroups(item.groups),
-      pinned: item.pinned === true,
+      ...normalizeFriendUser({
+        username,
+        note: typeof item.note === "string" ? item.note : "",
+        groups: normalizeGroups(item.groups),
+        pinned: item.pinned === true,
+        activityKinds: normalizeActivityKinds(item.activityKinds),
+        upgradedAt: normalizeTimestamp(item.upgradedAt),
+        updatedAt: normalizeTimestamp(item.updatedAt)
+      }),
       upgradedAt: normalizeTimestamp(item.upgradedAt),
       updatedAt: normalizeTimestamp(item.updatedAt)
     };

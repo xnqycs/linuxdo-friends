@@ -55,6 +55,51 @@ describe("storage migration", () => {
     });
   });
 
+  it("normalizes legacy persisted friends to all activity kinds", async () => {
+    const storage = createMockStorage({
+      linuxdoFriendsState: {
+        friends: {
+          Neo: {
+            username: "@Neo",
+            note: "NAS",
+            groups: ["ops"],
+            pinned: true,
+            upgradedAt: "2026-06-28T00:00:00.000Z",
+            updatedAt: "2026-06-28T00:01:00.000Z"
+          }
+        }
+      }
+    });
+
+    await expect(loadState(storage)).resolves.toMatchObject({
+      friends: {
+        neo: {
+          username: "neo",
+          activityKinds: ["topic", "reply", "boost", "reaction"]
+        }
+      }
+    });
+  });
+
+  it("preserves explicit empty friend activity scope", async () => {
+    const storage = createMockStorage({
+      linuxdoFriendsState: {
+        friends: {
+          neo: {
+            username: "neo",
+            activityKinds: [],
+            upgradedAt: "2026-06-28T00:00:00.000Z",
+            updatedAt: "2026-06-28T00:01:00.000Z"
+          }
+        }
+      }
+    });
+
+    await expect(loadState(storage)).resolves.toMatchObject({
+      friends: { neo: { username: "neo", activityKinds: [] } }
+    });
+  });
+
   it("preserves persisted activity refresh ledger", async () => {
     const storage = createMockStorage({
       linuxdoFriendsState: {

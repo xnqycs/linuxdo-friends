@@ -2,7 +2,7 @@ import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { addFriendFromProfile } from "../domain/friends";
+import { addFriendFromProfile, updateFriend } from "../domain/friends";
 import { defaultAppState } from "../domain/defaultState";
 import { createMockStorage } from "../test/mockStorage";
 import { SITE_DATA_PROGRESS_STORAGE_KEY } from "../storage/siteDataProgressStorage";
@@ -134,6 +134,7 @@ describe("FriendsApp UI scene persistence", () => {
             note: "",
             groups: [],
             pinned: false,
+            activityKinds: ["topic", "reply", "boost", "reaction"],
             upgradedAt: "2026-06-28T00:00:00.000Z",
             updatedAt: "2026-06-28T00:00:00.000Z"
           }
@@ -277,6 +278,71 @@ describe("FriendsApp UI scene persistence", () => {
     });
 
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "openOptionsPage" });
+  });
+
+  it("renders per-friend activity scope controls in the manage modal and updates scope", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.addFriendModalOpen]: true
+    });
+    const chromeMock = setupChrome({
+      session,
+      state: updateFriend(
+        addFriendFromProfile(defaultAppState, {
+          username: "Neo",
+          name: "Neo",
+          refreshedAt: "2026-06-28T00:00:00.000Z"
+        }),
+        "neo",
+        { activityKinds: ["reply", "boost"] }
+      )
+    });
+    const { container } = await renderFriendsApp("side-panel");
+
+    expect(container.querySelector(".scope-select-trigger")?.textContent).toContain("回复 / Boost");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".scope-select-trigger")?.click();
+    });
+    await act(async () => {
+      const replyOption = Array.from(container.querySelectorAll<HTMLButtonElement>(".scope-select-menu button")).find((button) =>
+        button.textContent?.includes("回复")
+      );
+      replyOption?.click();
+    });
+
+    expect(chromeMock.sendMessage).toHaveBeenCalledWith({
+      type: "updateFriend",
+      username: "neo",
+      patch: { activityKinds: ["boost"] }
+    });
+  });
+
+  it("shows effective request counts in the activity type selector", async () => {
+    const session = createMockStorage({
+      [uiSceneStorageKeys.version]: 1,
+      [uiSceneStorageKeys.tab]: "feed",
+      [uiSceneStorageKeys.activityKindPopoverOpen]: true
+    });
+    setupChrome({
+      session,
+      state: updateFriend(
+        addFriendFromProfile(defaultAppState, {
+          username: "Neo",
+          name: "Neo",
+          refreshedAt: "2026-06-28T00:00:00.000Z"
+        }),
+        "neo",
+        { activityKinds: ["reply", "boost"] }
+      )
+    });
+    const { container } = await renderFriendsApp("side-panel");
+
+    expect(container.textContent).toContain("全部 x 2");
+    expect(container.textContent).toContain("话题 x 0");
+    expect(container.textContent).toContain("回复 x 1");
+    expect(container.textContent).toContain("Boost x 1");
+    expect(container.textContent).toContain("回应 x 0");
   });
 
   it("keeps the linked-session tag and settings launcher in the browser side panel surface", async () => {
@@ -490,6 +556,7 @@ function setupChrome({
     }
     if (message.type === "openSidePanel") return { ok: true, data: { message: "已打开插件侧栏。" } };
     if (message.type === "openOptionsPage") return { ok: true, data: { message: "已打开配置页。" } };
+    if (message.type === "updateFriend") return { ok: true, data: updateFriend(state, message.username, message.patch) };
     return { ok: true, data: state };
   });
   vi.stubGlobal("chrome", {
