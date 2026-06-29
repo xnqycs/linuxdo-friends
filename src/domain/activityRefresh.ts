@@ -86,7 +86,8 @@ export function activityRequestStepsForUser(usernameInput: Username, kind: Activ
     ];
   }
   return [
-    userActionsStep(username, "user_actions", "4,5", "话题/回复"),
+    userActionsStep(username, "topic", "4", "话题"),
+    userActionsStep(username, "reply", "5", "回复"),
     {
       username,
       kind: "boost",

@@ -4,10 +4,16 @@ import { extractFriendProfile } from "../api/profileParser";
 import { defaultAppState } from "../domain/defaultState";
 import { addFriendFromProfile } from "../domain/friends";
 
+const nativePushState = window.history.pushState;
+const nativeReplaceState = window.history.replaceState;
+
 describe("content script friend markers", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.resetModules();
     vi.unstubAllGlobals();
+    window.history.pushState = nativePushState;
+    window.history.replaceState = nativeReplaceState;
     document.body.innerHTML = "";
   });
 
@@ -56,6 +62,142 @@ describe("content script friend markers", () => {
     expect(pageStyle.match(/\.linuxdo-friends-name-mark \{[^}]+}/)?.[0]).not.toContain("color:");
   });
 
+  it("detects explicit page theme signals before rendered background fallback", async () => {
+    document.documentElement.dataset.theme = "dark";
+    document.body.style.backgroundColor = "rgb(255, 255, 255)";
+
+    const { detectPageTheme } = await import("./contentScript");
+
+    expect(detectPageTheme()).toBe("dark");
+  });
+
+  it("falls back to rendered background readability when no page theme signal exists", async () => {
+    document.documentElement.removeAttribute("data-theme");
+    document.documentElement.style.backgroundColor = "transparent";
+    document.body.style.backgroundColor = "rgb(250, 250, 250)";
+
+    const { detectPageTheme } = await import("./contentScript");
+
+    expect(detectPageTheme()).toBe("light");
+  });
+
+  it("coalesces theme sync when a Discourse theme target appears after startup", async () => {
+    vi.useFakeTimers();
+    document.body.style.backgroundColor = "rgb(250, 250, 250)";
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn(async () => ({ ok: true, data: defaultAppState })),
+        onMessage: {
+          addListener: vi.fn()
+        }
+      },
+      storage: {
+        local: createMockLocalStorage(),
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+
+    const { scheduleFriendMarkers } = await import("./contentScript");
+    expect(document.documentElement.dataset.linuxdoFriendsTheme).toBe("light");
+
+    document.body.insertAdjacentHTML("beforeend", '<main id="discourse-root" data-theme="light"></main>');
+    document.getElementById("discourse-root")?.setAttribute("data-theme", "dark");
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(document.documentElement.dataset.linuxdoFriendsTheme).toBe("dark");
+    vi.useRealTimers();
+  });
+
+  it("syncs page theme when Discourse toggles light and dark stylesheet media", async () => {
+    vi.useFakeTimers();
+    document.head.insertAdjacentHTML(
+      "beforeend",
+      '<link class="light-scheme" rel="stylesheet" media="all"><link class="dark-scheme" rel="stylesheet" media="none">'
+    );
+    const originalGetComputedStyle = window.getComputedStyle.bind(window);
+    vi.stubGlobal("getComputedStyle", ((element: Element) => {
+      const style = originalGetComputedStyle(element);
+      if (element !== document.documentElement) return style;
+      return new Proxy(style, {
+        get(target, prop, receiver) {
+          if (prop === "getPropertyValue") {
+            return (name: string) => {
+              if (name === "--scheme-type") {
+                return document.querySelector<HTMLLinkElement>("link.dark-scheme")?.media === "all" ? "dark" : "light";
+              }
+              return target.getPropertyValue(name);
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        }
+      });
+    }) as typeof window.getComputedStyle);
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn(async () => ({ ok: true, data: defaultAppState })),
+        onMessage: {
+          addListener: vi.fn()
+        }
+      },
+      storage: {
+        local: createMockLocalStorage(),
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+
+    const { scheduleFriendMarkers } = await import("./contentScript");
+    expect(document.documentElement.dataset.linuxdoFriendsTheme).toBe("light");
+
+    const lightLink = document.querySelector<HTMLLinkElement>("link.light-scheme");
+    const darkLink = document.querySelector<HTMLLinkElement>("link.dark-scheme");
+    lightLink?.setAttribute("media", "none");
+    darkLink?.setAttribute("media", "all");
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(document.documentElement.dataset.linuxdoFriendsTheme).toBe("dark");
+    vi.useRealTimers();
+  });
+
+  it("does not rescan page theme for ordinary subtree attribute mutations", async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<div id="ordinary-node"></div>';
+    document.body.style.backgroundColor = "rgb(250, 250, 250)";
+    const getComputedStyleSpy = vi.fn(window.getComputedStyle.bind(window));
+    vi.stubGlobal("getComputedStyle", getComputedStyleSpy);
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn(async () => ({ ok: true, data: defaultAppState })),
+        onMessage: {
+          addListener: vi.fn()
+        }
+      },
+      storage: {
+        local: createMockLocalStorage(),
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+
+    await import("./contentScript");
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100);
+    getComputedStyleSpy.mockClear();
+    document.getElementById("ordinary-node")?.setAttribute("class", "dark");
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(getComputedStyleSpy).not.toHaveBeenCalled();
+    expect(document.documentElement.dataset.linuxdoFriendsTheme).toBe("light");
+    vi.useRealTimers();
+  });
+
   it("removes stale markers when the friend set changes", async () => {
     const state = addFriendFromProfile(defaultAppState, {
       username: "Neil",
@@ -101,14 +243,16 @@ describe("content script friend markers", () => {
       }
     });
 
-    await import("./contentScript");
+    const { scheduleFriendMarkers } = await import("./contentScript");
+    await Promise.resolve();
     await Promise.resolve();
     document.getElementById("main-outlet")?.insertAdjacentHTML(
       "beforeend",
       '<a href="/u/neil"><img class="avatar" src="/user_avatar/linux.do/neil/48/1.png" alt="">Neo</a>'
     );
     window.history.pushState({}, "", "/u/neil");
-    await vi.runOnlyPendingTimersAsync();
+    scheduleFriendMarkers();
+    await waitForFriendMark('a[href="/u/neil"]');
 
     const friendLink = document.querySelector<HTMLAnchorElement>('a[href="/u/neil"]');
     expect(friendLink?.querySelector(".linuxdo-friends-name-mark")?.textContent).toBe("Neo");
@@ -237,6 +381,58 @@ describe("content script friend markers", () => {
     expect(sendMessage).toHaveBeenCalledWith({ type: "removeFriend", username: "misaka7369" });
     expect(button?.textContent).toBe("视奸");
     expect(button?.dataset.linuxdoFriendsActive).toBe("false");
+  });
+
+  it("inserts profile page action as its own list item beside Discourse follow controls", async () => {
+    const state = addFriendFromProfile(defaultAppState, {
+      username: "misaka7369",
+      name: "星",
+      refreshedAt: "2026-06-28T00:00:00.000Z"
+    });
+    window.history.replaceState({}, "", "/u/misaka7369/summary");
+    document.body.innerHTML = `
+      <section class="user-main">
+        <div class="names"><h1>星</h1><span class="username">Misaka7369</span></div>
+        <section class="controls">
+          <ul>
+            <li><button class="btn btn-primary compose-pm">私信</button></li>
+            <li class="user-profile-controls-outlet notification-level"><summary class="btn">常规</summary></li>
+            <li><button class="btn category-expert-endorse-btn">认可</button></li>
+            <li class="user-profile-controls-outlet follow-button-container">
+              <div class="ember-view"><button class="btn">取消关注</button></div>
+            </li>
+          </ul>
+        </section>
+      </section>
+    `;
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn(async (message: unknown) => {
+          if (isHeartbeatMessage(message)) return { ok: true };
+          if (isGetStateMessage(message)) return { ok: true, data: state };
+          return { ok: true, data: state };
+        }),
+        onMessage: {
+          addListener: vi.fn()
+        }
+      },
+      storage: {
+        local: createMockLocalStorage(),
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+
+    await import("./contentScript");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const controlItems = Array.from(document.querySelectorAll<HTMLElement>(".controls > ul > li"));
+    const button = document.getElementById("linuxdo-friends-profile-action");
+    expect(controlItems.map((item) => item.textContent?.trim())).toEqual(["私信", "常规", "认可", "取消关注", "取消视奸"]);
+    expect(button?.closest(".follow-button-container")).toBeNull();
+    expect(button?.closest("li")?.className).toBe("linuxdo-friends-action-wrapper");
   });
 
   it("adds a friend action to a user card popover", async () => {
@@ -583,6 +779,7 @@ describe("content script friend markers", () => {
   });
 
   it("adds a friends tab to the user avatar menu and mounts the in-page app inside it", async () => {
+    document.documentElement.dataset.theme = "light";
     document.body.innerHTML = `
       <div class="user-menu revamped menu-panel">
         <div class="panel-body">
@@ -624,11 +821,15 @@ describe("content script friend markers", () => {
     const panel = document.getElementById("linuxdo-friends-user-menu-panel");
     const nativePanel = document.querySelector<HTMLElement>(".quick-access-panel");
     const pageStyle = document.getElementById("linuxdo-friends-page-style")?.textContent ?? "";
-    expect(panel?.shadowRoot?.querySelector(".linuxdo-friends-menu-root")).toBeTruthy();
+    const menuRoot = panel?.shadowRoot?.querySelector<HTMLElement>(".linuxdo-friends-menu-root");
+    expect(menuRoot).toBeTruthy();
+    expect(menuRoot?.dataset.linuxdoFriendsTheme).toBe("light");
     expect(panel?.shadowRoot?.querySelector("style")?.textContent).toContain(".linuxdo-friends-menu-root .modal-backdrop");
     expect(panel?.shadowRoot?.querySelector("style")?.textContent).toContain("position: absolute");
     expect(panel?.shadowRoot?.querySelector("style")?.textContent).toContain("overflow-y: auto");
     expect(panel?.shadowRoot?.querySelector("style")?.textContent).toContain("height: auto");
+    expect(panel?.shadowRoot?.querySelector("style")?.textContent).toContain("color-scheme: inherit");
+    expect(panel?.shadowRoot?.querySelector("style")?.textContent).toContain("background: var(--app-bg)");
     expect(panel?.shadowRoot?.querySelector("style")?.textContent).toContain(".linuxdo-friends-menu-root .modal-head .icon-button");
     expect(panel?.shadowRoot?.querySelector("style")?.textContent).toContain("grid-column: 2");
     expect(panel?.shadowRoot?.querySelector("style")?.textContent).toContain("grid-row: 1");
@@ -639,6 +840,53 @@ describe("content script friend markers", () => {
     expect(nativePanel?.style.display).toBe("none");
     expect(tab?.className).toContain("active");
     expect(document.getElementById("user-menu-button-all-notifications")?.className).not.toContain("active");
+  });
+
+  it("updates the mounted in-page app theme when the page theme syncs", async () => {
+    document.documentElement.dataset.theme = "light";
+    document.body.innerHTML = `
+      <div class="user-menu revamped menu-panel">
+        <div class="panel-body">
+          <div class="panel-body-contents">
+            <div class="menu-tabs-container" role="tablist">
+              <div class="top-tabs tabs-list">
+                <a id="user-menu-button-all-notifications" class="btn btn-flat btn-icon no-text user-menu-tab active" role="tab" aria-selected="true">native</a>
+              </div>
+            </div>
+            <div class="quick-access-panel">native notifications</div>
+          </div>
+        </div>
+      </div>
+    `;
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: vi.fn(async () => ({ ok: true, data: defaultAppState })),
+        onMessage: {
+          addListener: vi.fn()
+        }
+      },
+      storage: {
+        local: createMockLocalStorage(),
+        onChanged: {
+          addListener: vi.fn()
+        }
+      }
+    });
+
+    const { enhanceUserMenu, syncPageTheme } = await import("./contentScript");
+    enhanceUserMenu();
+    document.getElementById("linuxdo-friends-user-menu-tab")?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    const menuRoot = document
+      .getElementById("linuxdo-friends-user-menu-panel")
+      ?.shadowRoot?.querySelector<HTMLElement>(".linuxdo-friends-menu-root");
+    expect(menuRoot?.dataset.linuxdoFriendsTheme).toBe("light");
+
+    document.documentElement.dataset.theme = "dark";
+    syncPageTheme();
+
+    expect(menuRoot?.dataset.linuxdoFriendsTheme).toBe("dark");
   });
 
   it("adapts the friends tab panel to Discourse narrow slide-in user drawers", async () => {
@@ -982,18 +1230,26 @@ describe("content script friend markers", () => {
         .mockResolvedValueOnce(
           new Response(
             JSON.stringify({
-            user_actions: [
-              {
-                id: 42,
-                action_type: 5,
-                topic_title: "一个近况",
-                created_at: "2026-06-27T00:00:02.000Z",
-                topic_id: 99,
-                post_id: 42,
-                post_url: "/t/example/42/1",
-                acting_username: "Misaka7369"
-              }
-            ]
+              user_actions: []
+            }),
+            { status: 200 }
+          )
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              user_actions: [
+                {
+                  id: 42,
+                  action_type: 5,
+                  topic_title: "一个近况",
+                  created_at: "2026-06-27T00:00:02.000Z",
+                  topic_id: 99,
+                  post_id: 42,
+                  post_url: "/t/example/42/1",
+                  acting_username: "Misaka7369"
+                }
+              ]
             }),
             { status: 200 }
           )
@@ -1054,16 +1310,21 @@ describe("content script friend markers", () => {
     });
     expect(fetch).toHaveBeenNthCalledWith(
       1,
-      "/user_actions.json?offset=0&username=misaka7369&filter=4,5",
+      "/user_actions.json?offset=0&username=misaka7369&filter=4",
       expect.objectContaining({ credentials: "same-origin" })
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      "/discourse-boosts/users/misaka7369/boosts-given.json",
+      "/user_actions.json?offset=0&username=misaka7369&filter=5",
       expect.objectContaining({ credentials: "same-origin" })
     );
     expect(fetch).toHaveBeenNthCalledWith(
       3,
+      "/discourse-boosts/users/misaka7369/boosts-given.json",
+      expect.objectContaining({ credentials: "same-origin" })
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
       "/discourse-reactions/posts/reactions.json?username=misaka7369",
       expect.objectContaining({ credentials: "same-origin" })
     );
@@ -1170,6 +1431,7 @@ describe("content script friend markers", () => {
       vi
         .fn()
         .mockResolvedValueOnce(new Response(JSON.stringify(userActionsPayload), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(userActionsPayload), { status: 200 }))
         .mockResolvedValueOnce(new Response(JSON.stringify(boostsPayload), { status: 200 }))
         .mockResolvedValueOnce(new Response(JSON.stringify(reactionsPayload), { status: 200 }))
     );
@@ -1267,6 +1529,14 @@ function createMockLocalStorage() {
       }
     }
   };
+}
+
+async function waitForFriendMark(selector: string) {
+  for (let index = 0; index < 5; index += 1) {
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100);
+    if (document.querySelector(selector)?.querySelector(".linuxdo-friends-name-mark")) return;
+  }
 }
 
 function isHeartbeatMessage(value: unknown): boolean {

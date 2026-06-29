@@ -653,6 +653,14 @@ describe("message contracts", () => {
               items: []
             }
           })
+          .mockResolvedValueOnce({
+            ok: true,
+            activity: {
+              username: "misaka7369",
+              refreshedAt: "2026-06-27T00:00:00.000Z",
+              items: []
+            }
+          })
       }
     });
 
@@ -668,7 +676,12 @@ describe("message contracts", () => {
     expect(tabs.sendMessage).toHaveBeenCalledWith(456, {
       type: "linuxdoFriends.extractActivity",
       username: "misaka7369",
-      kind: "user_actions"
+      kind: "topic"
+    });
+    expect(tabs.sendMessage).toHaveBeenCalledWith(456, {
+      type: "linuxdoFriends.extractActivity",
+      username: "misaka7369",
+      kind: "reply"
     });
     expect(tabs.sendMessage).toHaveBeenCalledWith(456, {
       type: "linuxdoFriends.extractActivity",

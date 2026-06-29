@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const manifest = JSON.parse(readFileSync(resolve(__dirname, "../public/manifest.json"), "utf8"));
+const appCss = readFileSync(resolve(__dirname, "styles/app.css"), "utf8");
 
 describe("extension manifest safety", () => {
   it("declares the MV3 extension surfaces inside the linux.do boundary", () => {
@@ -30,5 +31,13 @@ describe("extension manifest safety", () => {
     expect(manifest.permissions).not.toContain("webRequest");
     expect(manifest.permissions).not.toContain("declarativeNetRequest");
     expect(manifest.externally_connectable).toBeUndefined();
+  });
+
+  it("keeps theme mode automatic without a persisted extension setting", () => {
+    expect(appCss).toContain("color-scheme: light");
+    expect(appCss).toContain("@media (prefers-color-scheme: dark)");
+    expect(appCss).toContain('.linuxdo-friends-menu-root[data-linuxdo-friends-theme="light"]');
+    expect(appCss).toContain('.linuxdo-friends-menu-root[data-linuxdo-friends-theme="dark"]');
+    expect(appCss).not.toContain("themeMode");
   });
 });

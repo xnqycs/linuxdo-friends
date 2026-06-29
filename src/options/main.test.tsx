@@ -132,6 +132,16 @@ describe("OptionsApp update diagnostics", () => {
     expect(chromeMock.sendMessage).toHaveBeenCalledWith({ type: "importConfig", json: "{}" });
     expect(container.textContent).toContain("已导入 1 位佬朋友配置。");
   });
+
+  it("shows the feed background refresh placeholder without enabling durable auto refresh", async () => {
+    const { container } = await renderOptionsApp();
+
+    expect(container.textContent).toContain("佬友圈后台刷新");
+    expect(container.textContent).toContain("webhook");
+    expect(container.textContent).toContain("规则匹配");
+    expect(container.textContent).toContain("本版本只保留入口");
+    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
+  });
 });
 
 async function renderOptionsApp() {

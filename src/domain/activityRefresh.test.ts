@@ -26,7 +26,12 @@ describe("activity refresh planning and merge", () => {
     expect(activityRequestStepsForUser("Neil", "reaction").map((step) => step.path)).toEqual([
       "/discourse-reactions/posts/reactions.json?username=neil"
     ]);
-    expect(activityRequestStepsForUser("Neil", "all").map((step) => step.kind)).toEqual(["user_actions", "boost", "reaction"]);
+    expect(activityRequestStepsForUser("Neil", "all").map((step) => [step.kind, step.path])).toEqual([
+      ["topic", "/user_actions.json?offset=0&username=neil&filter=4"],
+      ["reply", "/user_actions.json?offset=0&username=neil&filter=5"],
+      ["boost", "/discourse-boosts/users/neil/boosts-given.json"],
+      ["reaction", "/discourse-reactions/posts/reactions.json?username=neil"]
+    ]);
   });
 
   it("plans only selected friends and normalizes usernames", () => {

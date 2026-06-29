@@ -17,6 +17,22 @@ import {
   X
 } from "lucide-react";
 import {
+  autoRefreshSessionAtom,
+  claimAutoRefreshControllerAtom,
+  loadAutoRefreshSessionAtom,
+  observeAutoRefreshSessionAtom,
+  recordAutoRefreshFinishedAtom,
+  registerAutoRefreshSurfaceAtom,
+  unregisterAutoRefreshSurfaceAtom,
+  updateAutoRefreshEnabledAtom,
+  updateAutoRefreshIntervalAtom
+} from "../state/autoRefreshAtoms";
+import {
+  AUTO_REFRESH_HEARTBEAT_MS,
+  type FriendStatusAutoRefreshIntervalMinutes,
+  type FriendStatusAutoRefreshSession
+} from "../storage/autoRefreshSessionStorage";
+import {
   addFriendFromKnownUserAtom,
   appStateAtom,
   cacheAvatarsAtom,
@@ -149,8 +165,11 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const [siteDataProgress] = useAtom(siteDataProgressAtom);
   const [pageScriptStatus] = useAtom(pageScriptStatusAtom);
   const [updateCheck] = useAtom(updateCheckAtom);
+  const [autoRefreshSession] = useAtom(autoRefreshSessionAtom);
   const [uiScene] = useAtom(uiSceneAtom);
   const checkForUpdates = useSetAtom(checkForUpdatesAtom);
+  const claimAutoRefreshController = useSetAtom(claimAutoRefreshControllerAtom);
+  const loadAutoRefreshSession = useSetAtom(loadAutoRefreshSessionAtom);
   const loadState = useSetAtom(loadStateAtom);
   const loadPageScriptStatus = useSetAtom(loadPageScriptStatusAtom);
   const loadSiteDataProgress = useSetAtom(loadSiteDataProgressAtom);
@@ -161,6 +180,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const observePageScriptStatus = useSetAtom(observePageScriptStatusAtom);
   const observeSiteDataProgress = useSetAtom(observeSiteDataProgressAtom);
   const observeUpdateCheck = useSetAtom(observeUpdateCheckAtom);
+  const observeAutoRefreshSession = useSetAtom(observeAutoRefreshSessionAtom);
   const observeUiScene = useSetAtom(observeUiSceneAtom);
   const addFriendFromKnownUser = useSetAtom(addFriendFromKnownUserAtom);
   const cacheAvatars = useSetAtom(cacheAvatarsAtom);
@@ -172,11 +192,17 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const refreshFriendProfiles = useSetAtom(refreshFriendProfilesAtom);
   const refreshFriendActivity = useSetAtom(refreshFriendActivityAtom);
   const repairLinuxDoPageScript = useSetAtom(repairLinuxDoPageScriptAtom);
+  const registerAutoRefreshSurface = useSetAtom(registerAutoRefreshSurfaceAtom);
+  const recordAutoRefreshFinished = useSetAtom(recordAutoRefreshFinishedAtom);
   const syncFollows = useSetAtom(syncFollowsAtom);
   const clearStatus = useSetAtom(clearStatusMessageAtom);
+  const unregisterAutoRefreshSurface = useSetAtom(unregisterAutoRefreshSurfaceAtom);
+  const updateAutoRefreshEnabled = useSetAtom(updateAutoRefreshEnabledAtom);
+  const updateAutoRefreshInterval = useSetAtom(updateAutoRefreshIntervalAtom);
   const updateUiScene = useSetAtom(updateUiSceneAtom);
   const [appStateLoaded, setAppStateLoaded] = useState(false);
   const [relativeNow, setRelativeNow] = useState(() => Date.now());
+  const surfaceIdRef = useRef(`${surface}:${Date.now()}:${Math.random().toString(36).slice(2)}`);
   const { tab, feedKindFilter: kindFilter, feedUserFilter: userFilter, addFriendModalOpen: modalOpen } = uiScene;
 
   useEffect(() => {
@@ -185,21 +211,25 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
     void loadPageScriptStatus();
     void loadSiteDataProgress();
     void loadUpdateCheck();
+    void loadAutoRefreshSession();
     void checkForUpdates();
     const cleanupAppState = observeAppState();
     const cleanupUiScene = observeUiScene();
     const cleanupPageScriptStatus = observePageScriptStatus();
     const cleanupSiteDataProgress = observeSiteDataProgress();
     const cleanupUpdateCheck = observeUpdateCheck();
+    const cleanupAutoRefreshSession = observeAutoRefreshSession();
     return () => {
       cleanupAppState?.();
       cleanupUiScene?.();
       cleanupPageScriptStatus?.();
       cleanupSiteDataProgress?.();
       cleanupUpdateCheck?.();
+      cleanupAutoRefreshSession?.();
     };
   }, [
     checkForUpdates,
+    loadAutoRefreshSession,
     loadPageScriptStatus,
     loadSiteDataProgress,
     loadState,
@@ -209,8 +239,21 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
     observePageScriptStatus,
     observeSiteDataProgress,
     observeUpdateCheck,
+    observeAutoRefreshSession,
     observeUiScene
   ]);
+
+  useEffect(() => {
+    const surfaceId = surfaceIdRef.current;
+    void registerAutoRefreshSurface({ surfaceId, surface });
+    const heartbeat = window.setInterval(() => {
+      void registerAutoRefreshSurface({ surfaceId, surface });
+    }, AUTO_REFRESH_HEARTBEAT_MS);
+    return () => {
+      window.clearInterval(heartbeat);
+      void unregisterAutoRefreshSurface(surfaceId);
+    };
+  }, [registerAutoRefreshSurface, surface, unregisterAutoRefreshSurface]);
 
   useEffect(() => {
     if (!appStateLoaded || state.currentAccount) return;
@@ -232,6 +275,15 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
   const profileFreshness = useMemo(() => deriveProfileFreshness(friends), [friends]);
   const siteDataTaskRunning = siteDataProgress?.status === "running";
   const refreshDisabled = loading || siteDataTaskRunning || friends.length === 0;
+  useFriendStatusAutoRefresh({
+    autoRefreshSession,
+    claimController: claimAutoRefreshController,
+    friendsCount: friends.length,
+    progress: siteDataProgress,
+    recordFinished: recordAutoRefreshFinished,
+    refresh: refreshFriendProfiles,
+    surfaceId: surfaceIdRef.current
+  });
 
   useEffect(() => {
     if (!appStateLoaded) return;
@@ -333,9 +385,12 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
           onJumpToFeed={jumpToUserFeed}
           onOpenModal={() => void updateUiScene({ addFriendModalOpen: true })}
           onRefresh={() => void refreshFriendProfiles()}
+          onAutoRefreshEnabledChange={(enabled) => void updateAutoRefreshEnabled(enabled)}
+          onAutoRefreshIntervalChange={(interval) => void updateAutoRefreshInterval(interval)}
           progress={siteDataProgress}
           profileFreshness={profileFreshness}
           refreshDisabled={refreshDisabled}
+          autoRefresh={autoRefreshSession}
         />
       ) : (
         <FeedTab
@@ -346,6 +401,7 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
           kindFilter={kindFilter}
           now={relativeNow}
           onRefresh={() => void refreshFriendActivity(activityRefreshScope)}
+          onOpenOptions={() => void openOptionsPage()}
           onKindFilterChange={(value) => void updateUiScene({ feedKindFilter: value })}
           onUserFilterChange={(value) => void updateUiScene({ feedUserFilter: value })}
           onActivityKindPopoverChange={(activityKindPopover) => void updateUiScene({ activityKindPopover })}
@@ -384,9 +440,12 @@ export function FriendsApp({ surface = "side-panel" }: { surface?: AppSurface })
 }
 
 function FriendListTab({
+  autoRefresh,
   friends,
   loading,
   now,
+  onAutoRefreshEnabledChange,
+  onAutoRefreshIntervalChange,
   onJumpToFeed,
   onOpenModal,
   onRefresh,
@@ -394,9 +453,12 @@ function FriendListTab({
   profileFreshness,
   refreshDisabled
 }: {
+  autoRefresh: FriendStatusAutoRefreshSession;
   friends: ReturnType<typeof deriveFriendList>;
   loading: boolean;
   now: number;
+  onAutoRefreshEnabledChange: (enabled: boolean) => void;
+  onAutoRefreshIntervalChange: (interval: FriendStatusAutoRefreshIntervalMinutes) => void;
   onJumpToFeed: (username: Username) => void;
   onOpenModal: () => void;
   onRefresh: () => void;
@@ -408,16 +470,19 @@ function FriendListTab({
   return (
     <section>
       <div className="tab-action-row">
-        <button className="refresh-button refresh-button-with-meta" onClick={onRefresh} disabled={refreshDisabled} type="button">
-          <RefreshButtonContent
-            idleLabel="刷新状态"
-            idleMetaMode="freshness"
-            now={now}
-            progress={profileProgress}
-            progressMatches
-            freshness={profileFreshness}
-          />
-        </button>
+        <SplitRefreshButton
+          autoRefresh={autoRefresh}
+          disabled={refreshDisabled}
+          freshness={profileFreshness}
+          idleLabel="刷新状态"
+          now={now}
+          onAutoRefreshEnabledChange={onAutoRefreshEnabledChange}
+          onAutoRefreshIntervalChange={onAutoRefreshIntervalChange}
+          onRefresh={onRefresh}
+          progress={profileProgress}
+          progressMatches
+          warning="自动刷新会按间隔请求所有佬相好状态；遇到验证、限流或正在刷新会跳过。"
+        />
         <button className="manage-button" onClick={onOpenModal} disabled={loading} type="button">
           我的佬
         </button>
@@ -462,6 +527,7 @@ function FeedTab({
   kindFilter,
   now,
   onRefresh,
+  onOpenOptions,
   onActivityKindPopoverChange,
   onFeedUserPopoverChange,
   onKindFilterChange,
@@ -481,6 +547,7 @@ function FeedTab({
   kindFilter: ActivityKindFilter;
   now: number;
   onRefresh: () => void;
+  onOpenOptions: () => void;
   onActivityKindPopoverChange: (scene: { open?: boolean; query?: string }) => void;
   onFeedUserPopoverChange: (scene: { open?: boolean; query?: string }) => void;
   onKindFilterChange: (value: ActivityKindFilter) => void;
@@ -495,6 +562,8 @@ function FeedTab({
 }) {
   const activityProgress = progress?.taskType === "activity" ? progress : null;
   const feedTopRef = useRef<HTMLElement>(null);
+  const [backgroundMenuOpen, setBackgroundMenuOpen] = useState(false);
+  const backgroundMenuRef = useRef<HTMLDivElement>(null);
   const selectedIdentity = userFilter === "all" ? undefined : identityForUsername(state, userFilter);
   const userFilterOptions = useMemo<Array<FilterOption<"all" | Username>>>(
     () => [
@@ -514,19 +583,64 @@ function FeedTab({
     }
   }
 
+  useEffect(() => {
+    if (!backgroundMenuOpen) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (backgroundMenuRef.current && !eventHappenedInside(event, backgroundMenuRef.current)) {
+        setBackgroundMenuOpen(false);
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setBackgroundMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [backgroundMenuOpen]);
+
   return (
     <section ref={feedTopRef}>
       <div className="tab-action-row">
-        <button className="refresh-button refresh-button-with-meta" onClick={onRefresh} disabled={refreshDisabled} type="button">
-          <RefreshButtonContent
-            idleLabel="刷新动态"
-            idleMetaMode="freshness"
-            now={now}
-            progress={activityProgress}
-            progressMatches={Boolean(activityProgress && sameScope(activityProgress.scope, scope))}
-            freshness={activityFreshness}
-          />
-        </button>
+        <div className="split-refresh" ref={backgroundMenuRef}>
+          <button className="refresh-button refresh-button-with-meta split-refresh-main" onClick={onRefresh} disabled={refreshDisabled} type="button">
+            <RefreshButtonContent
+              idleLabel="刷新动态"
+              idleMetaMode="freshness"
+              now={now}
+              progress={activityProgress}
+              progressMatches={Boolean(activityProgress && sameScope(activityProgress.scope, scope))}
+              freshness={activityFreshness}
+            />
+          </button>
+          <button
+            className="split-refresh-toggle"
+            type="button"
+            onClick={() => setBackgroundMenuOpen((open) => !open)}
+            aria-expanded={backgroundMenuOpen}
+            aria-label="后台刷新设置"
+          >
+            <ChevronDown size={15} aria-hidden="true" />
+          </button>
+          {backgroundMenuOpen ? (
+            <div className="refresh-menu refresh-menu-feed">
+              <p className="refresh-menu-title">后台刷新</p>
+              <p className="refresh-menu-warning">佬友圈后台刷新需要在设置页配置，后续会关联 webhook 和规则匹配。</p>
+              <button
+                className="refresh-menu-action"
+                type="button"
+                onClick={() => {
+                  setBackgroundMenuOpen(false);
+                  onOpenOptions();
+                }}
+              >
+                去设置
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
       <div className="filters">
         <FilterPopover
@@ -569,6 +683,178 @@ function FeedTab({
       )}
     </section>
   );
+}
+
+function SplitRefreshButton({
+  autoRefresh,
+  disabled,
+  freshness,
+  idleLabel,
+  now,
+  onAutoRefreshEnabledChange,
+  onAutoRefreshIntervalChange,
+  onRefresh,
+  progress,
+  progressMatches,
+  warning
+}: {
+  autoRefresh: FriendStatusAutoRefreshSession;
+  disabled: boolean;
+  freshness: { label: string; refreshedAt?: string };
+  idleLabel: string;
+  now: number;
+  onAutoRefreshEnabledChange: (enabled: boolean) => void;
+  onAutoRefreshIntervalChange: (interval: FriendStatusAutoRefreshIntervalMinutes) => void;
+  onRefresh: () => void;
+  progress: SiteDataTaskProgress | null;
+  progressMatches: boolean;
+  warning: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (menuRef.current && !eventHappenedInside(event, menuRef.current)) {
+        setOpen(false);
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="split-refresh" ref={menuRef}>
+      <button className="refresh-button refresh-button-with-meta split-refresh-main" onClick={onRefresh} disabled={disabled} type="button">
+        <RefreshButtonContent
+          idleLabel={idleLabel}
+          idleMetaMode="freshness"
+          now={now}
+          progress={progress}
+          progressMatches={progressMatches}
+          freshness={freshness}
+        />
+      </button>
+      <button
+        className={`split-refresh-toggle${autoRefresh.enabled ? " active" : ""}`}
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-label="自动刷新设置"
+      >
+        <ChevronDown size={15} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="refresh-menu">
+          <label className="refresh-menu-check">
+            <input type="checkbox" checked={autoRefresh.enabled} onChange={(event) => onAutoRefreshEnabledChange(event.target.checked)} />
+            <span>自动刷新</span>
+          </label>
+          <div className="refresh-menu-group" role="radiogroup" aria-label="自动刷新间隔">
+            {([1, 10, 30] as const).map((interval) => (
+              <label className="refresh-menu-radio" key={interval}>
+                <input
+                  type="radio"
+                  name="friend-status-auto-refresh-interval"
+                  checked={autoRefresh.intervalMinutes === interval}
+                  onChange={() => onAutoRefreshIntervalChange(interval)}
+                />
+                <span>{interval} 分钟</span>
+              </label>
+            ))}
+          </div>
+          <p className="refresh-menu-warning">{warning}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function useFriendStatusAutoRefresh({
+  autoRefreshSession,
+  claimController,
+  friendsCount,
+  progress,
+  recordFinished,
+  refresh,
+  surfaceId
+}: {
+  autoRefreshSession: FriendStatusAutoRefreshSession;
+  claimController: (surfaceId: string) => Promise<FriendStatusAutoRefreshSession>;
+  friendsCount: number;
+  progress: SiteDataTaskProgress | null;
+  recordFinished: (finishedAt: string) => Promise<void>;
+  refresh: () => Promise<void>;
+  surfaceId: string;
+}) {
+  const refreshInFlightRef = useRef(false);
+  const lastFinishedProgressRef = useRef<string | undefined>(undefined);
+  const latestProfileFinishedAtRef = useRef<string | undefined>(undefined);
+  const skippedDueWhileRunningRef = useRef(false);
+
+  useEffect(() => {
+    if (progress?.status === "running" || !progress?.finishedAt) return;
+    if (progress.taskType === "profiles") {
+      latestProfileFinishedAtRef.current = progress.finishedAt;
+    }
+    const shouldRecordAnchor = progress.taskType === "profiles" || skippedDueWhileRunningRef.current;
+    if (!shouldRecordAnchor) return;
+    skippedDueWhileRunningRef.current = false;
+    if (lastFinishedProgressRef.current === progress.finishedAt) return;
+    lastFinishedProgressRef.current = progress.finishedAt;
+    void recordFinished(progress.finishedAt);
+  }, [progress, recordFinished]);
+
+  useEffect(() => {
+    if (!autoRefreshSession.enabled || friendsCount === 0) return;
+    if (autoRefreshSession.controllerSurfaceId && autoRefreshSession.controllerSurfaceId !== surfaceId) return;
+    let cancelled = false;
+    const intervalMs = autoRefreshSession.intervalMinutes * 60_000;
+    const anchor = Date.parse(autoRefreshSession.lastFinishedAt ?? autoRefreshSession.enabledAt ?? "");
+    const elapsed = Number.isFinite(anchor) ? Date.now() - anchor : intervalMs;
+    const delay = Math.max(0, intervalMs - elapsed);
+    if (progress?.status === "running") {
+      const skipTimer = window.setTimeout(() => {
+        if (!cancelled) skippedDueWhileRunningRef.current = true;
+      }, delay);
+      return () => {
+        cancelled = true;
+        window.clearTimeout(skipTimer);
+      };
+    }
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        if (cancelled || refreshInFlightRef.current) return;
+        if (progress?.status === "running") return;
+        const claimed = await claimController(surfaceId);
+        if (cancelled || claimed.controllerSurfaceId !== surfaceId || !claimed.controllerHeartbeatAt) return;
+        const startedAt = Date.now();
+        refreshInFlightRef.current = true;
+        try {
+          await refresh();
+        } finally {
+          refreshInFlightRef.current = false;
+          const finishedAt = latestProfileFinishedAtRef.current;
+          const finishedTime = finishedAt ? Date.parse(finishedAt) : Number.NaN;
+          const fallbackFinishedAt = Number.isFinite(finishedTime) && finishedTime >= startedAt ? finishedAt : undefined;
+          const recordedFinishedAt = fallbackFinishedAt ?? new Date().toISOString();
+          if (!cancelled && lastFinishedProgressRef.current !== recordedFinishedAt) void recordFinished(recordedFinishedAt);
+        }
+      })();
+    }, delay);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [autoRefreshSession, claimController, friendsCount, progress, recordFinished, refresh, surfaceId]);
 }
 
 function FeedActivityCard({

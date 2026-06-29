@@ -193,13 +193,17 @@ describe("refresh adapter", () => {
     expect(result.state.activity.ada).toBeUndefined();
   });
 
-  it("refreshes selected friends through all three endpoints and normalizes selected usernames", async () => {
+  it("refreshes selected friends through all four activity endpoints and normalizes selected usernames", async () => {
     const state = addFriendFromProfile(defaultAppState, { username: "neil", refreshedAt: "2026-06-28T00:00:00.000Z" });
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({
         user_actions: [
-          { action_type: 4, topic_id: 1, post_number: 1, created_at: "2026-06-27T00:00:03.000Z", acting_username: "Neil", title: "topic" },
+          { action_type: 4, topic_id: 1, post_number: 1, created_at: "2026-06-27T00:00:03.000Z", acting_username: "Neil", title: "topic" }
+        ]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        user_actions: [
           { action_type: 5, topic_id: 1, post_id: 2, created_at: "2026-06-27T00:00:02.000Z", acting_username: "Neil", title: "reply" }
         ]
       }))
@@ -231,19 +235,24 @@ describe("refresh adapter", () => {
     const result = await adapter.refreshFriendActivity(state, { kind: "all", usernames: ["ghost", "NEIL"] });
 
     expect(result.result).toMatchObject({ ok: true, source: "direct_fetch" });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
-      "https://linux.do/user_actions.json?offset=0&username=neil&filter=4,5",
+      "https://linux.do/user_actions.json?offset=0&username=neil&filter=4",
       expect.any(Object)
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
-      "https://linux.do/discourse-boosts/users/neil/boosts-given.json",
+      "https://linux.do/user_actions.json?offset=0&username=neil&filter=5",
       expect.any(Object)
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
+      "https://linux.do/discourse-boosts/users/neil/boosts-given.json",
+      expect.any(Object)
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
       "https://linux.do/discourse-reactions/posts/reactions.json?username=neil",
       expect.any(Object)
     );
@@ -367,6 +376,7 @@ describe("refresh adapter", () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ user_actions: [] }))
+      .mockResolvedValueOnce(jsonResponse({ user_actions: [] }))
       .mockResolvedValueOnce(jsonResponse({ boosts: [] }))
       .mockResolvedValueOnce(jsonResponse([])) as unknown as typeof fetch;
     const adapter = createRefreshAdapter(fetchImpl);
@@ -375,8 +385,8 @@ describe("refresh adapter", () => {
     const result = await adapter.refreshFriendActivity(state, { kind: "all", usernames: ["Neil"] }, progress);
 
     expect(result.result).toMatchObject({ ok: true });
-    expect(progress).toHaveBeenCalledTimes(3);
-    expect(progress.mock.calls.map(([step]) => step.kind)).toEqual(["user_actions", "boost", "reaction"]);
+    expect(progress).toHaveBeenCalledTimes(4);
+    expect(progress.mock.calls.map(([step]) => step.kind)).toEqual(["topic", "reply", "boost", "reaction"]);
   });
 
   it("does not write a partial summary when a later endpoint fails", async () => {
@@ -439,6 +449,7 @@ describe("refresh adapter", () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ user_actions: [] }))
+      .mockResolvedValueOnce(jsonResponse({ user_actions: [] }))
       .mockResolvedValueOnce(jsonResponse({ boosts: [] }))
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(new Response("Enable JavaScript and cookies to continue", { status: 429 })) as unknown as typeof fetch;
@@ -447,7 +458,7 @@ describe("refresh adapter", () => {
     const result = await adapter.refreshFriendActivity(state, { kind: "all" });
 
     expect(result.result).toMatchObject({ ok: false, reason: "challenge" });
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
     expect(result.state.activity).toEqual(state.activity);
     expect(result.state.activityRefreshLedger).toEqual(state.activityRefreshLedger);
     expect(result.state.activityWatermarks).toEqual(state.activityWatermarks);
