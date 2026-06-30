@@ -155,6 +155,30 @@ describe("storage migration", () => {
     });
   });
 
+  it("preserves telegram bot token and chat id", async () => {
+    const storage = createMockStorage({
+      linuxdoFriendsState: {
+        settings: { telegramBotToken: "123456:ABC-DEF", telegramChatId: "987654321" }
+      }
+    });
+
+    await expect(loadState(storage)).resolves.toMatchObject({
+      settings: { telegramBotToken: "123456:ABC-DEF", telegramChatId: "987654321" }
+    });
+  });
+
+  it("omits telegram settings when not stored", async () => {
+    const storage = createMockStorage({
+      linuxdoFriendsState: {
+        settings: { refreshIntervalMinutes: 90 }
+      }
+    });
+
+    const state = await loadState(storage);
+    expect(state.settings.telegramBotToken).toBeUndefined();
+    expect(state.settings.telegramChatId).toBeUndefined();
+  });
+
   it("preserves persisted avatar cache", async () => {
     const storage = createMockStorage({
       linuxdoFriendsState: {

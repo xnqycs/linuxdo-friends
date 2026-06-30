@@ -73,6 +73,8 @@ function mergeSettings(stored?: Partial<RefreshSettings>): RefreshSettings {
     openActivityLinksInPage:
       typeof stored?.openActivityLinksInPage === "boolean" ? stored.openActivityLinksInPage : defaultAppState.settings.openActivityLinksInPage,
     allowAutoRefresh: false,
-    allowInactiveTabFallback: false
+    allowInactiveTabFallback: false,
+    telegramBotToken: typeof stored?.telegramBotToken === "string" && stored.telegramBotToken ? stored.telegramBotToken : undefined,
+    telegramChatId: typeof stored?.telegramChatId === "string" && stored.telegramChatId ? stored.telegramChatId : undefined
   };
 }

@@ -155,6 +155,8 @@ export interface RefreshSettings {
   allowInactiveTabFallback: boolean;
   openActivityLinksInPage: boolean;
   refreshIntervalMinutes: number;
+  telegramBotToken?: string;
+  telegramChatId?: string;
 }
 
 export interface CurrentAccount {
@@ -370,7 +372,8 @@ export type BackgroundCommand =
   | { type: "exportConfig" }
   | { type: "importConfig"; json: string }
   | { type: "clearCache" }
-  | { type: "resetExtension" };
+  | { type: "resetExtension" }
+  | { type: "testTelegramNotification" };
 
 export type BackgroundResponse<T = unknown> =
   | { ok: true; data: T }

@@ -1,5 +1,6 @@
 import { createRefreshAdapter } from "../api/refreshAdapter";
 import { sortActivityItems } from "../domain/activity";
+import { maybeSendTelegramNotifications, sendTelegramMessage } from "../domain/telegramNotify";
 import {
   applyScopedActivityRefresh,
   clearActivityNewFlags,
@@ -168,10 +169,15 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
       return runSiteDataTask(() => refreshState(syncFollowedUsersWithFallback));
     case "refreshFriendProfiles":
       return runSiteDataTask(() => refreshState((state) => refreshFriendProfilesWithFallback(state, command.usernames)));
-    case "refreshFriendActivity":
-      return runSiteDataTask(() =>
+    case "refreshFriendActivity": {
+      const activityResponse = await runSiteDataTask(() =>
         refreshState((state) => refreshFriendActivityWithFallback(state, command.scope ?? { kind: "all", usernames: command.usernames }))
       );
+      if (activityResponse.ok) {
+        void maybeSendTelegramNotifications(activityResponse.data as AppState);
+      }
+      return activityResponse;
+    }
     case "cacheAvatars":
       return ok(await cacheAvatarsFromExistingTab(command.usernames));
     case "getSiteDataProgress":
@@ -225,6 +231,15 @@ async function dispatch(command: BackgroundCommand, sender: chrome.runtime.Messa
       return ok(await clearCache());
     case "resetExtension":
       return ok(await resetExtension());
+    case "testTelegramNotification": {
+      const testState = await loadState();
+      const { telegramBotToken, telegramChatId } = testState.settings;
+      if (!telegramBotToken || !telegramChatId) {
+        return { ok: false, error: "请先填写 Bot Token 和 Chat ID。" };
+      }
+      const telegramResult = await sendTelegramMessage(telegramBotToken, telegramChatId, "🔔 佬朋友测试消息：Telegram 配置成功！");
+      return telegramResult.ok ? ok("已发送测试消息。") : { ok: false, error: telegramResult.error };
+    }
   }
 }
 
