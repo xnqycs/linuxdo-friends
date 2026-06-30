@@ -2,11 +2,13 @@ import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const isWatchMode = process.argv.includes("--watch") || process.argv.includes("-w");
+
 export default defineConfig({
   plugins: [react()],
   build: {
     outDir: "dist",
-    emptyOutDir: true,
+    emptyOutDir: !isWatchMode,
     sourcemap: true,
     rollupOptions: {
       input: {
