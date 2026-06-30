@@ -23,6 +23,7 @@ export function isBackgroundCommand(value: unknown): value is BackgroundCommand 
     case "exportConfig":
     case "clearCache":
     case "resetExtension":
+    case "testTelegramNotification":
       return true;
     case "openOptionsPage":
       return command.hash === undefined || isOptionsHash(command.hash);
@@ -96,7 +97,9 @@ function isSettingsPatch(value: unknown): boolean {
     (value.allowAutoRefresh === undefined || typeof value.allowAutoRefresh === "boolean") &&
     (value.allowInactiveTabFallback === undefined || typeof value.allowInactiveTabFallback === "boolean") &&
     (value.openActivityLinksInPage === undefined || typeof value.openActivityLinksInPage === "boolean") &&
-    (value.refreshIntervalMinutes === undefined || isValidRefreshInterval(value.refreshIntervalMinutes))
+    (value.refreshIntervalMinutes === undefined || isValidRefreshInterval(value.refreshIntervalMinutes)) &&
+    (value.telegramBotToken === undefined || typeof value.telegramBotToken === "string") &&
+    (value.telegramChatId === undefined || typeof value.telegramChatId === "string")
   );
 }
 

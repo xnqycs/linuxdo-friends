@@ -41,6 +41,7 @@
     "sidePanel"
   ],
   "host_permissions": [
+    "https://api.telegram.org/*",
     "https://api.github.com/*",
     "https://github-api.lafish.workers.dev/*",
     "https://linuxdo-cloud-save.lafish.workers.dev/*",

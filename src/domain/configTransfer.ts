@@ -125,7 +125,9 @@ function normalizeStoredSettings(value: Partial<RefreshSettings> | Record<string
     openActivityLinksInPage:
       typeof value.openActivityLinksInPage === "boolean" ? value.openActivityLinksInPage : defaultAppState.settings.openActivityLinksInPage,
     allowAutoRefresh: false,
-    allowInactiveTabFallback: false
+    allowInactiveTabFallback: false,
+    telegramBotToken: typeof value.telegramBotToken === "string" && value.telegramBotToken ? value.telegramBotToken : undefined,
+    telegramChatId: typeof value.telegramChatId === "string" && value.telegramChatId ? value.telegramChatId : undefined
   };
 }
 
@@ -153,7 +155,9 @@ function normalizeImportedSettings(value: Partial<RefreshSettings> | Record<stri
     openActivityLinksInPage:
       typeof value.openActivityLinksInPage === "boolean" ? value.openActivityLinksInPage : defaultAppState.settings.openActivityLinksInPage,
     allowAutoRefresh: false,
-    allowInactiveTabFallback: false
+    allowInactiveTabFallback: false,
+    telegramBotToken: typeof value.telegramBotToken === "string" && value.telegramBotToken ? value.telegramBotToken : undefined,
+    telegramChatId: typeof value.telegramChatId === "string" && value.telegramChatId ? value.telegramChatId : undefined
   };
 }
 

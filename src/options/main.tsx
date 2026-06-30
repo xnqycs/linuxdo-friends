@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useAtom, useSetAtom } from "jotai";
-import { Cloud } from "lucide-react";
+import { Cloud, Send } from "lucide-react";
 import {
   appStateAtom,
   checkForUpdatesAtom,
@@ -50,6 +50,10 @@ export function OptionsApp() {
   const [cloudBusy, setCloudBusy] = useState<"bind" | "status" | "backup" | "restore" | "clear" | null>(null);
   const [accountBusy, setAccountBusy] = useState(false);
   const [cloudMessage, setCloudMessage] = useState<string | null>(null);
+  const [telegramToken, setTelegramToken] = useState("");
+  const [telegramChatId, setTelegramChatId] = useState("");
+  const [telegramMessage, setTelegramMessage] = useState<string | null>(null);
+  const [telegramBusy, setTelegramBusy] = useState<"save" | "test" | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -63,6 +67,11 @@ export function OptionsApp() {
       window.clearInterval(interval);
     };
   }, [checkForUpdates, loadState, loadUpdateCheck, observeUpdateCheck]);
+
+  useEffect(() => {
+    setTelegramToken(state.settings.telegramBotToken ?? "");
+    setTelegramChatId(state.settings.telegramChatId ?? "");
+  }, [state.settings.telegramBotToken, state.settings.telegramChatId]);
 
   const refreshCloudStatus = useCallback(async (options: { silent?: boolean } = {}) => {
     if (!options.silent) setCloudBusy("status");
@@ -105,6 +114,36 @@ export function OptionsApp() {
   async function updateSettings(patch: Partial<typeof state.settings>) {
     const response = await sendCommand<typeof state>({ type: "updateSettings", settings: patch });
     if (response.ok) setState(response.data);
+  }
+
+  async function handleSaveTelegram() {
+    setTelegramBusy("save");
+    setTelegramMessage(null);
+    try {
+      const response = await sendCommand<typeof state>({
+        type: "updateSettings",
+        settings: { telegramBotToken: telegramToken.trim(), telegramChatId: telegramChatId.trim() }
+      });
+      if (response.ok) {
+        setState(response.data);
+        setTelegramMessage(telegramToken.trim() ? "Telegram 配置已保存。" : "已清除 Telegram 配置。");
+      } else {
+        setTelegramMessage(response.error);
+      }
+    } finally {
+      setTelegramBusy(null);
+    }
+  }
+
+  async function handleTestTelegram() {
+    setTelegramBusy("test");
+    setTelegramMessage(null);
+    try {
+      const response = await sendCommand<unknown>({ type: "testTelegramNotification" });
+      setTelegramMessage(response.ok ? "测试消息已发送，请检查 Telegram。" : response.error);
+    } finally {
+      setTelegramBusy(null);
+    }
   }
 
   async function handleIdentifyAccount() {
@@ -241,7 +280,7 @@ export function OptionsApp() {
 
       <section className="panel">
         <h2>偏好设置</h2>
-        <div className="settings-placeholder">
+        <div className="settings-placeholder" style={{ marginTop: 12 }}>
           <h3>动态跳转</h3>
           <div className="segmented-control" role="radiogroup" aria-label="动态跳转">
             <button
@@ -262,6 +301,50 @@ export function OptionsApp() {
             </button>
           </div>
           <p className="settings-meta">页内跳转会优先使用当前 linux.do 标签页；不可用时仍打开新标签。</p>
+        </div>
+        <div className="settings-placeholder" style={{ marginTop: 12 }}>
+          <h3>
+            <Send size={13} aria-hidden="true" style={{ display: "inline", verticalAlign: "middle", marginRight: 4 }} />
+            Telegram 通知
+          </h3>
+          <div>
+            <label className="settings-meta" htmlFor="tg-bot-token" style={{ display: "block", marginBottom: 4 }}>
+              Bot Token
+            </label>
+            <input
+              id="tg-bot-token"
+              type="password"
+              placeholder="123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+              value={telegramToken}
+              onChange={(e) => setTelegramToken(e.currentTarget.value)}
+              autoComplete="off"
+            />
+          </div>
+          <div>
+            <label className="settings-meta" htmlFor="tg-chat-id" style={{ display: "block", marginBottom: 4 }}>
+              Chat ID
+            </label>
+            <input
+              id="tg-chat-id"
+              type="text"
+              placeholder="123456789"
+              value={telegramChatId}
+              onChange={(e) => setTelegramChatId(e.currentTarget.value)}
+              autoComplete="off"
+            />
+          </div>
+          <div className="maintenance-actions">
+            <button className="small-action" type="button" disabled={telegramBusy != null} onClick={() => void handleSaveTelegram()}>
+              {telegramBusy === "save" ? "保存中" : "保存"}
+            </button>
+            <button className="small-action" type="button" disabled={telegramBusy != null} onClick={() => void handleTestTelegram()}>
+              {telegramBusy === "test" ? "发送中" : "发送测试消息"}
+            </button>
+          </div>
+          {telegramMessage ? <p className="settings-meta">{telegramMessage}</p> : null}
+          <p className="settings-meta">
+            刷新到新动态时自动推送 Telegram 消息。需自行创建 Bot（向 @BotFather 发送 /newbot）并使用 @userinfobot 获取自己的 Chat ID。
+          </p>
         </div>
         <div className="settings-construction-card" aria-label="后台刷新设置正在施工">
           <div>
